@@ -2,6 +2,8 @@
 *.o
 *.a
 *.so
+*-Log.txt
+*Encoded.txt
 
 # Folders
 _obj
