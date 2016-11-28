@@ -7,6 +7,7 @@ import (
   "net/http"
   "net/rpc"
   "time"
+  "strconv"
   "bufio"
   "github.com/arcaneiceman/GoVector/govec"
   "bitbucket.org/bestchai/dinv/dinvRT"
@@ -25,6 +26,11 @@ type HeartbeatHandler struct {
   Peers []Peer
 }
 
+type Peer struct {
+  address string
+  active *bool
+}
+
 type Heartbeat struct {
   Buffer []byte
   SourceAddress string
@@ -36,9 +42,40 @@ func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {
   return nil
 }
 
-type Peer struct {
-  address string
-  active *bool
+/* A handler for calendars */
+type CalendarHandler struct {
+  Logger *govec.GoLog
+  MyCalendar Calendar
+}
+
+type Calendar struct {
+  Owner string
+  Slots map[int]Booking
+}
+
+type Booking struct {
+  MeetingID string
+  Status string // A, M, B, R
+  Origin string // node that originated the request
+  Attendees []string
+}
+
+// From the UI to the proposer
+type ProposeRequest struct {
+  Attendees []string
+  TimeSlots []int
+}
+
+func (t* CalendarHandler) Propose(req ProposeRequest, reply *int) error {
+
+  for _, time := range req.TimeSlots {
+    if t.MyCalendar.Slots[time].Status == "A" {
+      fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+    }
+  }
+
+  return nil
+
 }
 
 /* UTILITY FUNCTIONS */
@@ -82,30 +119,47 @@ func main() {
       
     }
 
-    status := heartbeatPhase(Logger, address, peers)
-    
+    // Set up for BEAT messages
+    heartbeatHandler := HeartbeatHandler{Logger, peers}
+    rpc.Register(&heartbeatHandler)
+
+    calendarHandler := CalendarHandler{Logger, initCalendar(address)}
+    rpc.Register(&calendarHandler)
+
+    // Export the RPC functions
+    rpc.HandleHTTP()
+    listener,err := net.Listen("tcp", address)
+    check(err)
+    go http.Serve(listener, nil)
+
+    status := heartbeatPhase(Logger, listener, address, peers)
     if status == 1 {
-      fmt.Println("I MADE IT")
-      for {
-        
-      }
+      fmt.Println("Ready to start Archie!")
+      archieMain(Logger)
     }
 
     fmt.Println("I FAILED")
     os.Exit(1)
 }
 
-func heartbeatPhase(Logger *govec.GoLog, address string, peers []Peer) int{
+func initCalendar(owner string) Calendar {
+  
+  bookings := make(map[int]Booking) 
+  for i := 0; i < 24; i++ {
+    newBooking := Booking{"", "A", "", make([]string, 0)}
+    bookings[i] = newBooking
+  }
 
-  // Set up for BEAT messages
-  heartbeatHandler := HeartbeatHandler{Logger, peers}
-  rpc.Register(&heartbeatHandler)
+  aCalendar := Calendar{owner, bookings}
+  fmt.Println(aCalendar)
+  return aCalendar
+}
 
-  // Export the RPC functions
-  rpc.HandleHTTP()
-  listener,err := net.Listen("tcp", address)
-  check(err)
-  go http.Serve(listener, nil)
+func archieMain(Logger *govec.GoLog) {
+  // what do I do here...
+}
+
+func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, peers []Peer) int{
 
   allPeersFound := false
     
@@ -121,7 +175,7 @@ func heartbeatPhase(Logger *govec.GoLog, address string, peers []Peer) int{
           // Just wait for them to start up
           fmt.Println(err)
           fmt.Println("Couldn't contact " + peer.address)
-          time.Sleep(time.Duration(3000) * time.Millisecond)
+          time.Sleep(time.Duration(1000) * time.Millisecond)
           continue
         }
 
