@@ -77,6 +77,7 @@ type Booking struct {
 
 // From the UI to the proposer
 type UserPropose struct {
+  MeetingID string
   Attendees []string
   TimeSlots []int
 }
@@ -85,14 +86,15 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
   var timeslots []int
 
-  if t.MyMeeting.MeetingID != "InitialID" {
+  if t.MyMeeting.MeetingID == "InitialID" {
     
     numRepliesNeeded := len(req.Attendees)
-    t.MyMeeting = Meeting{"SomeUnique", &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
+    t.MyMeeting = Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
 
     for _, time := range req.TimeSlots {
       if t.MyCalendar.Slots[time].Status == "A" {
         fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, req.Attendees}
         timeslots = append(timeslots, time)
       }
     }
@@ -140,15 +142,15 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
   for _, time := range req.TimeSlots {
     if t.MyCalendar.Slots[time].Status == "A" {
       fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
-      booking := t.MyCalendar.Slots[time]
-      booking.Status = "R"
-      booking.MeetingID = req.MeetingID
-      booking.ProposerID = req.ProposerID
-      booking.Attendees = req.Attendees
+      booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees}
+      t.MyCalendar.Slots[time] = booking
       timeslots = append(timeslots, time)
     }
   }
 
+  fmt.Println(t.AddressLookup)
+  fmt.Println(req.ProposerID)
+  fmt.Println(t.MyCalendar)
   client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID])
   check(err) // TODO handle node failure
 
@@ -184,8 +186,10 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
   bestTime := -1
   if (*t.MyMeeting.NumRepliesNeeded == 0) {   
-    bestTime = findIntersectingTime(t.MyMeeting.TimeSlotsMap, t.MyMeeting.RequestedTimeSlots, len(t.MyMeeting.Attendees))
     
+    bestTime = findIntersectingTime(t.MyMeeting.TimeSlotsMap, t.MyMeeting.RequestedTimeSlots, len(t.MyMeeting.Attendees))
+    fmt.Println("The best time is at " + strconv.Itoa(bestTime))
+
     for _, attendeeID := range t.MyMeeting.Attendees {
 
       client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
@@ -203,33 +207,31 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
       err = client.Close()
       check(err)
+
+      fmt.Println("ROGER DONE")
+
     }
 
-    for time, booking := range t.MyCalendar.Slots {
+    for _, time := range t.MyMeeting.RequestedTimeSlots {
       
+      booking := t.MyCalendar.Slots[time]
+
       if booking.MeetingID == t.MyMeeting.MeetingID {
 
-        if time == bestTime {
-        
-          if (booking.Status == "R") {
-            booking.Status = "M"
+        if (booking.Status == "R") { 
+          if time == bestTime {
+            t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees}
           } else {
-            fmt.Println("Something very bad happened. Time was " + strconv.Itoa(time))
-            fmt.Println(t.MyCalendar.Slots)
-            os.Exit(1)
-          }
-        
-        } else { 
-          booking.Status = "A"
-          booking.MeetingID = ""
-          booking.ProposerID = ""
-          booking.Attendees = make([]string, 0)
-        } 
+            t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0)}  
+          } 
+        }
       }
 
     }
 
     t.MyMeeting = initMeeting()
+    fmt.Println(t.MyMeeting)
+    fmt.Println(t.MyCalendar)
 
   }
 
@@ -249,25 +251,18 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
     
     if booking.MeetingID == req.MeetingID {
 
-      if time == req.BestTime {
-      
-        if (booking.Status == "R") {
-          booking.Status = "M"
+      if (booking.Status == "R") { 
+        if time == req.BestTime {
+          t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees}
         } else {
-          fmt.Println("Something very bad happened. Time was " + strconv.Itoa(time))
-          fmt.Println(t.MyCalendar.Slots)
-          os.Exit(1)
-        }
-      
-      } else { 
-        booking.Status = "A"
-        booking.MeetingID = ""
-        booking.ProposerID = ""
-        booking.Attendees = make([]string, 0)
-      } 
+          t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0)}  
+        } 
+      }
     }
 
   }
+
+  fmt.Println(t.MyCalendar)
 
   *reply = 1
   return nil
@@ -368,7 +363,7 @@ func main() {
     heartbeatHandler := HeartbeatHandler{Logger, peers}
     rpc.Register(&heartbeatHandler)
 
-    calendarHandler := CalendarHandler{Logger, address, lookup, initMeeting(), initCalendar(address)}
+    calendarHandler := CalendarHandler{Logger, myName, lookup, initMeeting(), initCalendar(myName)}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
