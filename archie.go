@@ -8,7 +8,9 @@ import (
   "net/rpc"
   "time"
   "strconv"
+  "strings"
   "bufio"
+  "errors"
   "github.com/arcaneiceman/GoVector/govec"
   "bitbucket.org/bestchai/dinv/dinvRT"
 )
@@ -27,17 +29,19 @@ type HeartbeatHandler struct {
 }
 
 type Peer struct {
+  name string
   address string
   active *bool
 }
 
 type Heartbeat struct {
   Buffer []byte
+  SourceName string
   SourceAddress string
 }
 
 func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {  
-  fmt.Println("Received BEAT from " + req.SourceAddress)
+  fmt.Println("Received BEAT from " + req.SourceName)
   *reply = 1
   return nil
 }
@@ -45,7 +49,18 @@ func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {
 /* A handler for calendars */
 type CalendarHandler struct {
   Logger *govec.GoLog
+  SelfID string
+  AddressLookup map[string]string
+  MyMeeting Meeting
   MyCalendar Calendar
+}
+
+type Meeting struct {
+  MeetingID string // used for proposed
+  NumRepliesNeeded *int 
+  Attendees []string
+  RequestedTimeSlots []int
+  TimeSlotsMap map[string][]int
 }
 
 type Calendar struct {
@@ -54,31 +69,252 @@ type Calendar struct {
 }
 
 type Booking struct {
-  MeetingID string
   Status string // A, M, B, R
-  Origin string // node that originated the request
+  MeetingID string
+  ProposerID string // node that originated the request
   Attendees []string
 }
 
 // From the UI to the proposer
-type ProposeRequest struct {
+type UserPropose struct {
   Attendees []string
   TimeSlots []int
 }
 
-func (t* CalendarHandler) Propose(req ProposeRequest, reply *int) error {
+func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
-  for _, time := range req.TimeSlots {
-    if t.MyCalendar.Slots[time].Status == "A" {
-      fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+  var timeslots []int
+
+  if t.MyMeeting.MeetingID != "InitialID" {
+    
+    numRepliesNeeded := len(req.Attendees)
+    t.MyMeeting = Meeting{"SomeUnique", &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
+
+    for _, time := range req.TimeSlots {
+      if t.MyCalendar.Slots[time].Status == "A" {
+        fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+        timeslots = append(timeslots, time)
+      }
     }
+
+    for _, attendeeID := range req.Attendees {
+
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      check(err) // TODO handle node failure
+
+      args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + attendeeID), t.MyMeeting.MeetingID, t.SelfID, req.Attendees, timeslots}
+      reply := 0
+      err = client.Call("CalendarHandler.Propose", args, &reply)
+      check(err)
+
+      err = client.Close()
+      check(err)
+
+    }
+
+  } else {
+    fmt.Println("You are already trying a meeting, fool.")
+    return errors.New("Already attempting meetingID " + t.MyMeeting.MeetingID)
   }
 
   return nil
 
 }
 
+// Message Type 1. Proposer sends to acceptors
+type Propose struct {
+  Buffer []byte
+  MeetingID string
+  ProposerID string
+  Attendees []string
+  TimeSlots []int 
+}
+
+func (t* CalendarHandler) Propose(req Propose, reply *int) error {
+
+  fmt.Println(req.ProposerID + ", I accept you!")
+  dinvRT.UnpackM(req.Buffer, nil, "Got PROPOSE from " + req.ProposerID)
+
+  var timeslots []int
+
+  for _, time := range req.TimeSlots {
+    if t.MyCalendar.Slots[time].Status == "A" {
+      fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+      booking := t.MyCalendar.Slots[time]
+      booking.Status = "R"
+      booking.MeetingID = req.MeetingID
+      booking.ProposerID = req.ProposerID
+      booking.Attendees = req.Attendees
+      timeslots = append(timeslots, time)
+    }
+  }
+
+  client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID])
+  check(err) // TODO handle node failure
+
+  args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + req.ProposerID), req.MeetingID, t.SelfID, timeslots}
+  subreply := 0
+  err = client.Call("CalendarHandler.Reserve", args, &subreply)
+  check(err)
+
+  err = client.Close()
+  check(err)  
+
+  return nil
+
+}
+
+// Message type 2. Acceptors send RESERVE to proposer
+type Reserve struct {
+  Buffer []byte
+  MeetingID string
+  AcceptorID string
+  TimeSlots []int
+}
+
+func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
+
+  fmt.Println("Got RESERVE from " + req.AcceptorID)
+  dinvRT.UnpackM(req.Buffer, nil, "Got RESERVE from " + req.AcceptorID)
+
+  if (t.MyMeeting.MeetingID == req.MeetingID) {
+    *t.MyMeeting.NumRepliesNeeded = *t.MyMeeting.NumRepliesNeeded - 1
+    t.MyMeeting.TimeSlotsMap[req.AcceptorID] = req.TimeSlots
+  }
+
+  bestTime := -1
+  if (*t.MyMeeting.NumRepliesNeeded == 0) {   
+    bestTime = findIntersectingTime(t.MyMeeting.TimeSlotsMap, t.MyMeeting.RequestedTimeSlots, len(t.MyMeeting.Attendees))
+    
+    for _, attendeeID := range t.MyMeeting.Attendees {
+
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      check(err) // TODO handle node failure
+
+      args := Select{dinvRT.PackM(nil, "Sending SELECT to " + attendeeID), t.MyMeeting.MeetingID, t.SelfID, bestTime}
+      reply := 0
+      err = client.Call("CalendarHandler.Select", args, &reply)
+      check(err)
+
+      if reply != 1 {
+        fmt.Println("ROGER FAILED?")
+        os.Exit(1)
+      }
+
+      err = client.Close()
+      check(err)
+    }
+
+    for time, booking := range t.MyCalendar.Slots {
+      
+      if booking.MeetingID == t.MyMeeting.MeetingID {
+
+        if time == bestTime {
+        
+          if (booking.Status == "R") {
+            booking.Status = "M"
+          } else {
+            fmt.Println("Something very bad happened. Time was " + strconv.Itoa(time))
+            fmt.Println(t.MyCalendar.Slots)
+            os.Exit(1)
+          }
+        
+        } else { 
+          booking.Status = "A"
+          booking.MeetingID = ""
+          booking.ProposerID = ""
+          booking.Attendees = make([]string, 0)
+        } 
+      }
+
+    }
+
+    t.MyMeeting = initMeeting()
+
+  }
+
+  return nil
+}
+
+type Select struct {
+  Buffer []byte
+  MeetingID string
+  ProposerID string
+  BestTime int
+}
+
+func (t* CalendarHandler) Select(req Select, reply *int) error {
+
+  for time, booking := range t.MyCalendar.Slots {
+    
+    if booking.MeetingID == req.MeetingID {
+
+      if time == req.BestTime {
+      
+        if (booking.Status == "R") {
+          booking.Status = "M"
+        } else {
+          fmt.Println("Something very bad happened. Time was " + strconv.Itoa(time))
+          fmt.Println(t.MyCalendar.Slots)
+          os.Exit(1)
+        }
+      
+      } else { 
+        booking.Status = "A"
+        booking.MeetingID = ""
+        booking.ProposerID = ""
+        booking.Attendees = make([]string, 0)
+      } 
+    }
+
+  }
+
+  *reply = 1
+  return nil
+}
+
 /* UTILITY FUNCTIONS */
+func findIntersectingTime(timeslotMap map[string][]int, requested []int, requestedNum int) int {
+
+  acceptCountMap := make(map[int]int)
+  for _, time := range requested {
+    acceptCountMap[time] = 0
+  }
+
+  for _, goodTimes := range timeslotMap {
+    for _, time := range goodTimes {
+      acceptCountMap[time]++       
+    }
+  }
+
+  for time, count := range acceptCountMap {
+    if count == requestedNum {
+      return time
+    }
+  } 
+
+  return -1
+}
+
+func initCalendar(owner string) Calendar {
+  
+  bookings := make(map[int]Booking) 
+  for i := 0; i < 24; i++ {
+    newBooking := Booking{"A", "", "", make([]string, 0)}
+    bookings[i] = newBooking
+  }
+
+  aCalendar := Calendar{owner, bookings}
+  fmt.Println(aCalendar)
+  return aCalendar
+}
+
+func initMeeting() Meeting {
+  numRepliesNeeded := 0
+  initialMeeting := Meeting{"InitialID", &numRepliesNeeded, make([]string, 0), make([]int, 0), make(map[string][]int) }
+  return initialMeeting
+}
+
 func check(err error) {
   if err != nil {
     panic(err)
@@ -92,6 +328,7 @@ func main() {
 
     fmt.Println("Starting.....")
 
+    myName := ""
     address := os.Args[1]
     peersfile := os.Args[2]
 
@@ -102,6 +339,7 @@ func main() {
     dinvRT.GetLogger().LogLocalEvent("Starting...")
 
     var peers []Peer
+    lookup := make(map[string]string)
 
     // Open the peersfile
     file, err := os.Open(peersfile)
@@ -109,12 +347,19 @@ func main() {
     defer file.Close()
     scanner := bufio.NewScanner(file)
     for scanner.Scan() {
-      peerAddress := scanner.Text()
       
+      peerCombo := scanner.Text()
+      peerSplit := strings.Split(peerCombo, ",")
+      peerName := peerSplit[0]
+      peerAddress := peerSplit[1]
+
       // don't add yourself
       if peerAddress != address {
-        peers = append(peers, Peer{peerAddress, new(bool)})
+        peers = append(peers, Peer{peerName, peerAddress, new(bool)})
+        lookup[peerName] = peerAddress
         fmt.Println("Peer found at: " + peerAddress)
+      } else {
+        myName = peerName
       }
       
     }
@@ -123,7 +368,7 @@ func main() {
     heartbeatHandler := HeartbeatHandler{Logger, peers}
     rpc.Register(&heartbeatHandler)
 
-    calendarHandler := CalendarHandler{Logger, initCalendar(address)}
+    calendarHandler := CalendarHandler{Logger, address, lookup, initMeeting(), initCalendar(address)}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -132,7 +377,7 @@ func main() {
     check(err)
     go http.Serve(listener, nil)
 
-    status := heartbeatPhase(Logger, listener, address, peers)
+    status := heartbeatPhase(Logger, listener, address, myName, peers)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
       archieMain(Logger)
@@ -142,24 +387,15 @@ func main() {
     os.Exit(1)
 }
 
-func initCalendar(owner string) Calendar {
+func archieMain(Logger *govec.GoLog) {
   
-  bookings := make(map[int]Booking) 
-  for i := 0; i < 24; i++ {
-    newBooking := Booking{"", "A", "", make([]string, 0)}
-    bookings[i] = newBooking
+  for {
+
   }
 
-  aCalendar := Calendar{owner, bookings}
-  fmt.Println(aCalendar)
-  return aCalendar
 }
 
-func archieMain(Logger *govec.GoLog) {
-  // what do I do here...
-}
-
-func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, peers []Peer) int{
+func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, name string, peers []Peer) int{
 
   allPeersFound := false
     
@@ -174,12 +410,12 @@ func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, 
         if err != nil {
           // Just wait for them to start up
           fmt.Println(err)
-          fmt.Println("Couldn't contact " + peer.address)
+          fmt.Println("Couldn't contact " + peer.name)
           time.Sleep(time.Duration(1000) * time.Millisecond)
           continue
         }
 
-        args := Heartbeat{dinvRT.PackM(nil, "Beating to " + peer.address), address}
+        args := Heartbeat{dinvRT.PackM(nil, "Beating to " + peer.address), name, address}
         reply := 0
         err = client.Call("HeartbeatHandler.Beat", args, &reply)
         check(err)
