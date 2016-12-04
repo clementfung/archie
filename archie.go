@@ -29,9 +29,9 @@ type HeartbeatHandler struct {
 }
 
 type Peer struct {
-  name string
-  address string
-  active *bool
+  Name string
+  Address string
+  IsActive *bool
 }
 
 type Heartbeat struct {
@@ -49,8 +49,8 @@ func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {
 /* A handler for calendars */
 type CalendarHandler struct {
   Logger *govec.GoLog
-  SelfID string
-  AddressLookup map[string]string
+  SelfID int
+  AddressLookup map[int]Peer
   MyMeetings []Meeting
   MyCalendar Calendar
 }
@@ -58,9 +58,9 @@ type CalendarHandler struct {
 type Meeting struct {
   MeetingID string // used for proposed
   NumRepliesNeeded *int 
-  Attendees []string
+  Attendees []int
   RequestedTimeSlots []int
-  TimeSlotsMap map[string][]int
+  TimeSlotsMap map[int][]int
 }
 
 type Calendar struct {
@@ -71,8 +71,8 @@ type Calendar struct {
 type Booking struct {
   Status string // A, M, B, R
   MeetingID string
-  ProposerID string // node that originated the request
-  Attendees []string
+  ProposerID int // node that originated the request
+  Attendees []int
   Alternates []int
 }
 
@@ -95,25 +95,39 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
   }
 
   if theMeeting.MeetingID != "Taken" {
+
+    attendeeIDs := make([]int, 0)
+    attendeeNames := sliceToMap(req.Attendees)
+
+    for id, peer := range t.AddressLookup {
+      _, contains := attendeeNames[peer.Name]
+      if contains {
+        attendeeIDs = append(attendeeIDs, id)
+      } 
+    }
     
-    numRepliesNeeded := len(req.Attendees)
-    theMeeting = Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
+    fmt.Println(req.Attendees)
+    fmt.Println(attendeeIDs)
+    numRepliesNeeded := len(attendeeIDs)
+    theMeeting = Meeting{req.MeetingID, &numRepliesNeeded, attendeeIDs, req.TimeSlots, make(map[int][]int)} 
     t.MyMeetings = append(t.MyMeetings, theMeeting)
 
     for _, time := range req.TimeSlots {
       if t.MyCalendar.Slots[time].Status == "A" {
         fmt.Println("At time " + strconv.Itoa(time) + " try it.")
-        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, req.Attendees, req.TimeSlots}
+        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, attendeeIDs, req.TimeSlots}
         timeslots = append(timeslots, time)
       }
     }
 
-    for _, attendeeID := range req.Attendees {
+    for _, attendeeID := range attendeeIDs {
 
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
       check(err) // TODO handle node failure
 
-      args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + attendeeID), theMeeting.MeetingID, t.SelfID, req.Attendees, timeslots}
+      args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[attendeeID].Name), 
+          theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots}
+
       subreply := 0
       err = client.Call("CalendarHandler.Propose", args, &subreply)
       check(err)
@@ -137,15 +151,15 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 type Propose struct {
   Buffer []byte
   MeetingID string
-  ProposerID string
-  Attendees []string
+  ProposerID int
+  Attendees []int
   TimeSlots []int 
 }
 
 func (t* CalendarHandler) Propose(req Propose, reply *int) error {
 
-  fmt.Println(req.ProposerID + ", I accept you!")
-  dinvRT.UnpackM(req.Buffer, nil, "Got PROPOSE from " + req.ProposerID)
+  fmt.Println(t.AddressLookup[req.ProposerID].Name + ", I accept you!")
+  dinvRT.UnpackM(req.Buffer, nil, "Got PROPOSE from " + t.AddressLookup[req.ProposerID].Name)
 
   var timeslots []int
 
@@ -158,13 +172,10 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     }
   }
 
-  fmt.Println(t.AddressLookup)
-  fmt.Println(req.ProposerID)
-  fmt.Println(t.MyCalendar)
-  client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID])
+  client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID].Address)
   check(err) // TODO handle node failure
 
-  args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + req.ProposerID), req.MeetingID, t.SelfID, timeslots}
+  args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[req.ProposerID].Name), req.MeetingID, t.SelfID, timeslots}
   subreply := 0
   err = client.Call("CalendarHandler.Reserve", args, &subreply)
   check(err)
@@ -181,14 +192,14 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
 type Reserve struct {
   Buffer []byte
   MeetingID string
-  AcceptorID string
+  AcceptorID int
   TimeSlots []int
 }
 
 func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
-  fmt.Println("Got RESERVE from " + req.AcceptorID)
-  dinvRT.UnpackM(req.Buffer, nil, "Got RESERVE from " + req.AcceptorID)
+  fmt.Println("Got RESERVE from " + t.AddressLookup[req.AcceptorID].Name)
+  dinvRT.UnpackM(req.Buffer, nil, "Got RESERVE from " + t.AddressLookup[req.AcceptorID].Name)
 
   meetingIdx := -1
   for i, myMeeting := range t.MyMeetings {
@@ -221,11 +232,11 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
     for _, attendeeID := range t.MyMeetings[meetingIdx].Attendees {
 
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
       check(err) // TODO handle node failure
 
-      fmt.Println("Sending SELECT to " + attendeeID)
-      args := Select{dinvRT.PackM(nil, "Sending SELECT to " + attendeeID), myMeeting.MeetingID, t.SelfID, bestTime}
+      fmt.Println("Sending SELECT to " + t.AddressLookup[attendeeID].Name)
+      args := Select{dinvRT.PackM(nil, "Sending SELECT to " + t.AddressLookup[attendeeID].Name), myMeeting.MeetingID, t.SelfID, bestTime}
       subreply := 0
       err = client.Call("CalendarHandler.Select", args, &subreply)
       check(err)
@@ -253,7 +264,7 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
           if time == bestTime {
             t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
           } else {
-            t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+            t.MyCalendar.Slots[time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
           } 
         }
       }
@@ -274,7 +285,7 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 type Select struct {
   Buffer []byte
   MeetingID string
-  ProposerID string
+  ProposerID int
   BestTime int
 }
 
@@ -288,7 +299,7 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
         if time == req.BestTime {
           t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
         } else {
-          t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+          t.MyCalendar.Slots[time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
         } 
       }
     }
@@ -309,19 +320,19 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
   theBooking := t.MyCalendar.Slots[req.Time]
   fmt.Println("Oops! I'm busy at " + strconv.Itoa(req.Time))
-  t.MyCalendar.Slots[req.Time] = Booking{"B", "", "", make([]string, 0), make([]int, 0)}  
+  t.MyCalendar.Slots[req.Time] = Booking{"B", "", 0, make([]int, 0), make([]int, 0)}  
 
   if theBooking.Status == "M" {
     
     if (theBooking.ProposerID != t.SelfID) {
     
-      fmt.Println("Need to let " + theBooking.ProposerID + " know to reschedule!")
+      fmt.Println("Need to let " + t.AddressLookup[theBooking.ProposerID].Name + " know to reschedule!")
 
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID])
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID].Address)
       check(err) // TODO handle node failure
 
-      fmt.Println("Requesting a RESCHEDULE from " + theBooking.ProposerID)    
-      args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + theBooking.ProposerID), 
+      fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name)    
+      args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name), 
           t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates}
       
       subreply := 0
@@ -337,10 +348,10 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
       for _, attendeeID := range theBooking.Attendees {
     
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
         check(err) // TODO handle node failure
 
-        args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + attendeeID), theBooking.MeetingID, t.SelfID, req.Time}
+        args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[attendeeID].Name), theBooking.MeetingID, t.SelfID, req.Time}
         subreply := 0
         err = client.Call("CalendarHandler.Cancel", args, &subreply)
         check(err)
@@ -366,17 +377,17 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
 type Reschedule struct {
   Buffer []byte
-  Rescheduler string
-  ProposerID string
+  Rescheduler int
+  ProposerID int
   MeetingID string
   Time int
-  Attendees []string
+  Attendees []int
   Alternates []int
 }
 
 func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   
-  fmt.Println("Got a RESCHEDULE from " + req.Rescheduler + " for " + req.MeetingID)
+  fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
   theBooking := t.MyCalendar.Slots[req.Time]
   attendees := theBooking.Attendees
 
@@ -393,7 +404,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   timeslots = append(timeslots, req.Time)
   fmt.Println("At time " + strconv.Itoa(req.Time) + " try it.")
 
-  theMeeting := Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, timeslots, make(map[string][]int)} 
+  theMeeting := Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, timeslots, make(map[int][]int)} 
   t.MyMeetings = append(t.MyMeetings, theMeeting)
 
   if theBooking.MeetingID == req.MeetingID && theBooking.Status == "M" {
@@ -408,11 +419,11 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
 
   for _, attendeeID := range attendees {
 
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
       check(err) // TODO handle node failure
 
-      fmt.Println("Sending RESCHEDULE to " + attendeeID)
-      args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + attendeeID), 
+      fmt.Println("Sending RESCHEDULE to " + t.AddressLookup[attendeeID].Name)
+      args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + t.AddressLookup[attendeeID].Name), 
         req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots}
       subreply := 0
       err = client.Call("CalendarHandler.Reschedule", args, &subreply)
@@ -425,7 +436,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
 
 func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
 
-  fmt.Println("Got a RESCHEDULE from " + req.Rescheduler + " for " + req.MeetingID)
+  fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
 
   theBooking := t.MyCalendar.Slots[req.Time]
   if theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID {
@@ -444,13 +455,10 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
       }
     }
 
-    fmt.Println(t.AddressLookup)
-    fmt.Println(req.ProposerID)
-    fmt.Println(t.MyCalendar)
-    client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID])
+    client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID].Address)
     check(err) // TODO handle node failure
 
-    args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + req.ProposerID), req.MeetingID, t.SelfID, timeslots}
+    args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[req.ProposerID].Name), req.MeetingID, t.SelfID, timeslots}
     subreply := 0
     err = client.Call("CalendarHandler.Reserve", args, &subreply)
     check(err)
@@ -470,7 +478,7 @@ type UserCancel struct {
 type Cancel struct {
   Buffer []byte
   MeetingID string 
-  ProposerID string 
+  ProposerID int 
   Time int
 }
 
@@ -483,16 +491,16 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
   }
 
   if theBooking.Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
   }
   
   for _, attendeeID := range theBooking.Attendees {
   
-    client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+    client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
     check(err) // TODO handle node failure
 
-    fmt.Println("Sending CANCEL to " + attendeeID)
-    args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + attendeeID), theBooking.MeetingID, theBooking.ProposerID, req.Time}
+    fmt.Println("Sending CANCEL to " + t.AddressLookup[attendeeID].Name)
+    args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[attendeeID].Name), theBooking.MeetingID, theBooking.ProposerID, req.Time}
     subreply := 0
     err = client.Call("CalendarHandler.Cancel", args, &subreply)
     check(err)
@@ -515,10 +523,10 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
 
 func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
   
-  fmt.Println("Got a CANCEL from " + req.ProposerID + " for " + req.MeetingID)
+  fmt.Println("Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
   
   if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
     *reply = 1
   } 
   
@@ -528,7 +536,16 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
 }
 
 /* UTILITY FUNCTIONS */
-func findIntersectingTime(timeslotMap map[string][]int, requested []int, requestedNum int) int {
+func sliceToMap(theSlice []string) map[string]struct{} {
+
+  returnMap := make(map[string]struct{}, len(theSlice))
+  for _, item := range theSlice {
+    returnMap[item] = struct{}{}
+  }
+  return returnMap
+}
+
+func findIntersectingTime(timeslotMap map[int][]int, requested []int, requestedNum int) int {
 
   acceptCountMap := make(map[int]int)
   for _, time := range requested {
@@ -554,7 +571,7 @@ func initCalendar(owner string) Calendar {
   
   bookings := make(map[int]Booking) 
   for i := 0; i < 24; i++ {
-    newBooking := Booking{"A", "", "", make([]string, 0), make([]int, 0)}
+    newBooking := Booking{"A", "", 0, make([]int, 0), make([]int, 0)}
     bookings[i] = newBooking
   }
 
@@ -565,7 +582,7 @@ func initCalendar(owner string) Calendar {
 
 func initMeeting() Meeting {
   numRepliesNeeded := 0
-  initialMeeting := Meeting{"InitialID", &numRepliesNeeded, make([]string, 0), make([]int, 0), make(map[string][]int)}
+  initialMeeting := Meeting{"InitialID", &numRepliesNeeded, make([]int, 0), make([]int, 0), make(map[int][]int)}
   return initialMeeting
 }
 
@@ -583,6 +600,7 @@ func main() {
     fmt.Println("Starting.....")
 
     myName := ""
+    myNum := 0
     address := os.Args[1]
     peersfile := os.Args[2]
 
@@ -593,7 +611,7 @@ func main() {
     dinvRT.GetLogger().LogLocalEvent("Starting...")
 
     var peers []Peer
-    lookup := make(map[string]string)
+    lookup := make(map[int]Peer)
 
     // Open the peersfile
     file, err := os.Open(peersfile)
@@ -604,16 +622,22 @@ func main() {
       
       peerCombo := scanner.Text()
       peerSplit := strings.Split(peerCombo, ",")
-      peerName := peerSplit[0]
-      peerAddress := peerSplit[1]
+      peerNumStr := peerSplit[0]
+      peerName := peerSplit[1]
+      peerAddress := peerSplit[2]
+
+      peerNum, err := strconv.Atoi(peerNumStr)
+      check(err)
 
       // don't add yourself
       if peerAddress != address {
-        peers = append(peers, Peer{peerName, peerAddress, new(bool)})
-        lookup[peerName] = peerAddress
+        peer := Peer{peerName, peerAddress, new(bool)}
+        peers = append(peers, peer)
+        lookup[peerNum] = peer
         fmt.Println("Peer found at: " + peerAddress)
       } else {
         myName = peerName
+        myNum = peerNum
       }
       
     }
@@ -622,7 +646,7 @@ func main() {
     heartbeatHandler := HeartbeatHandler{Logger, peers}
     rpc.Register(&heartbeatHandler)
 
-    calendarHandler := CalendarHandler{Logger, myName, lookup, make([]Meeting, 0), initCalendar(myName)}
+    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myName)}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -656,27 +680,27 @@ func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, 
   for {
     for _, peer := range(peers) {
       
-      fmt.Println(peer.address)
-      fmt.Println(*peer.active)
-      if peer.address != address && !*peer.active {
+      fmt.Println(peer.Address)
+      fmt.Println(*peer.IsActive)
+      if peer.Address != address && !*peer.IsActive {
         
-        client, err := rpc.DialHTTP("tcp", peer.address)
+        client, err := rpc.DialHTTP("tcp", peer.Address)
         if err != nil {
           // Just wait for them to start up
           fmt.Println(err)
-          fmt.Println("Couldn't contact " + peer.name)
+          fmt.Println("Couldn't contact " + peer.Name)
           time.Sleep(time.Duration(1000) * time.Millisecond)
           continue
         }
 
-        args := Heartbeat{dinvRT.PackM(nil, "Beating to " + peer.address), name, address}
+        args := Heartbeat{dinvRT.PackM(nil, "Beating to " + peer.Address), name, address}
         reply := 0
         err = client.Call("HeartbeatHandler.Beat", args, &reply)
         check(err)
 
         if reply == 1 {
           fmt.Println("Got reply = 1")
-          *peer.active = true
+          *peer.IsActive = true
           fmt.Println(peer)
         }
 
@@ -689,7 +713,7 @@ func heartbeatPhase(Logger *govec.GoLog, listener net.Listener, address string, 
     // Check if everyone is alive
     allPeersFound = true
     for _, peer := range(peers) {
-      if !*peer.active {
+      if !*peer.IsActive {
         allPeersFound = false        
       }
     }
