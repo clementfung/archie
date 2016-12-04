@@ -51,7 +51,7 @@ type CalendarHandler struct {
   Logger *govec.GoLog
   SelfID string
   AddressLookup map[string]string
-  MyMeeting Meeting
+  MyMeetings []Meeting
   MyCalendar Calendar
 }
 
@@ -73,6 +73,7 @@ type Booking struct {
   MeetingID string
   ProposerID string // node that originated the request
   Attendees []string
+  Alternates []int
 }
 
 // From the UI to the proposer
@@ -86,15 +87,23 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
   var timeslots []int
 
-  if t.MyMeeting.MeetingID == "InitialID" {
+  theMeeting := initMeeting()
+  for _, meeting := range t.MyMeetings {
+    if meeting.MeetingID == req.MeetingID {
+      theMeeting.MeetingID = "Taken"
+    }
+  }
+
+  if theMeeting.MeetingID != "Taken" {
     
     numRepliesNeeded := len(req.Attendees)
-    t.MyMeeting = Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
+    theMeeting = Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, req.TimeSlots, make(map[string][]int)} 
+    t.MyMeetings = append(t.MyMeetings, theMeeting)
 
     for _, time := range req.TimeSlots {
       if t.MyCalendar.Slots[time].Status == "A" {
         fmt.Println("At time " + strconv.Itoa(time) + " try it.")
-        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, req.Attendees}
+        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, req.Attendees, req.TimeSlots}
         timeslots = append(timeslots, time)
       }
     }
@@ -104,9 +113,9 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
       client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
       check(err) // TODO handle node failure
 
-      args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + attendeeID), t.MyMeeting.MeetingID, t.SelfID, req.Attendees, timeslots}
-      reply := 0
-      err = client.Call("CalendarHandler.Propose", args, &reply)
+      args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + attendeeID), theMeeting.MeetingID, t.SelfID, req.Attendees, timeslots}
+      subreply := 0
+      err = client.Call("CalendarHandler.Propose", args, &subreply)
       check(err)
 
       err = client.Close()
@@ -116,9 +125,10 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
   } else {
     fmt.Println("You are already trying a meeting, fool.")
-    return errors.New("Already attempting meetingID " + t.MyMeeting.MeetingID)
+    return errors.New("Already attempting meetingID " + req.MeetingID)
   }
 
+  *reply = 1
   return nil
 
 }
@@ -142,7 +152,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
   for _, time := range req.TimeSlots {
     if t.MyCalendar.Slots[time].Status == "A" {
       fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
-      booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees}
+      booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
       t.MyCalendar.Slots[time] = booking
       timeslots = append(timeslots, time)
     }
@@ -161,6 +171,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
 
   err = client.Close()
   check(err)  
+  *reply = 1
 
   return nil
 
@@ -179,28 +190,47 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
   fmt.Println("Got RESERVE from " + req.AcceptorID)
   dinvRT.UnpackM(req.Buffer, nil, "Got RESERVE from " + req.AcceptorID)
 
-  if (t.MyMeeting.MeetingID == req.MeetingID) {
-    *t.MyMeeting.NumRepliesNeeded = *t.MyMeeting.NumRepliesNeeded - 1
-    t.MyMeeting.TimeSlotsMap[req.AcceptorID] = req.TimeSlots
+  meetingIdx := -1
+  for i, myMeeting := range t.MyMeetings {
+    if (myMeeting.MeetingID == req.MeetingID) {
+      *t.MyMeetings[i].NumRepliesNeeded = *t.MyMeetings[i].NumRepliesNeeded - 1
+      t.MyMeetings[i].TimeSlotsMap[req.AcceptorID] = req.TimeSlots
+      meetingIdx = i
+      break
+    }
+  }
+
+  if (meetingIdx == -1) {
+    fmt.Println("This isn't my Meeting?" + req.MeetingID)
+    fmt.Println(t.MyMeetings)
+    os.Exit(1)
   }
 
   bestTime := -1
-  if (*t.MyMeeting.NumRepliesNeeded == 0) {   
-    
-    bestTime = findIntersectingTime(t.MyMeeting.TimeSlotsMap, t.MyMeeting.RequestedTimeSlots, len(t.MyMeeting.Attendees))
-    fmt.Println("The best time is at " + strconv.Itoa(bestTime))
+  myMeeting := t.MyMeetings[meetingIdx] 
 
-    for _, attendeeID := range t.MyMeeting.Attendees {
+  if (*t.MyMeetings[meetingIdx].NumRepliesNeeded == 0) {   
+    
+    bestTime = findIntersectingTime(myMeeting.TimeSlotsMap, myMeeting.RequestedTimeSlots, len(myMeeting.Attendees))
+    
+    if (bestTime == -1) {
+      fmt.Println("No times work!")
+    } else {
+      fmt.Println("The best time is at " + strconv.Itoa(bestTime))
+    }
+
+    for _, attendeeID := range t.MyMeetings[meetingIdx].Attendees {
 
       client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
       check(err) // TODO handle node failure
 
-      args := Select{dinvRT.PackM(nil, "Sending SELECT to " + attendeeID), t.MyMeeting.MeetingID, t.SelfID, bestTime}
-      reply := 0
-      err = client.Call("CalendarHandler.Select", args, &reply)
+      fmt.Println("Sending SELECT to " + attendeeID)
+      args := Select{dinvRT.PackM(nil, "Sending SELECT to " + attendeeID), myMeeting.MeetingID, t.SelfID, bestTime}
+      subreply := 0
+      err = client.Call("CalendarHandler.Select", args, &subreply)
       check(err)
 
-      if reply != 1 {
+      if subreply != 1 {
         fmt.Println("ROGER FAILED?")
         os.Exit(1)
       }
@@ -212,30 +242,33 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
     }
 
-    for _, time := range t.MyMeeting.RequestedTimeSlots {
+    fmt.Println(myMeeting)
+    for _, time := range myMeeting.RequestedTimeSlots {
       
       booking := t.MyCalendar.Slots[time]
 
-      if booking.MeetingID == t.MyMeeting.MeetingID {
+      if booking.MeetingID == myMeeting.MeetingID {
 
         if (booking.Status == "R") { 
           if time == bestTime {
-            t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees}
+            t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
           } else {
-            t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0)}  
+            t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
           } 
         }
       }
 
     }
 
-    t.MyMeeting = initMeeting()
-    fmt.Println(t.MyMeeting)
+    t.MyMeetings[meetingIdx] = t.MyMeetings[len(t.MyMeetings)-1]
+    t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
     fmt.Println(t.MyCalendar)
-
+    fmt.Println(t.MyMeetings)
   }
 
+  *reply = 1
   return nil
+
 }
 
 type Select struct {
@@ -253,9 +286,9 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
 
       if (booking.Status == "R") { 
         if time == req.BestTime {
-          t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees}
+          t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
         } else {
-          t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0)}  
+          t.MyCalendar.Slots[time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
         } 
       }
     }
@@ -266,6 +299,232 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
 
   *reply = 1
   return nil
+}
+
+type UserBusy struct {
+  Time int
+}
+
+func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
+
+  theBooking := t.MyCalendar.Slots[req.Time]
+  fmt.Println("Oops! I'm busy at " + strconv.Itoa(req.Time))
+  t.MyCalendar.Slots[req.Time] = Booking{"B", "", "", make([]string, 0), make([]int, 0)}  
+
+  if theBooking.Status == "M" {
+    
+    if (theBooking.ProposerID != t.SelfID) {
+    
+      fmt.Println("Need to let " + theBooking.ProposerID + " know to reschedule!")
+
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID])
+      check(err) // TODO handle node failure
+
+      fmt.Println("Requesting a RESCHEDULE from " + theBooking.ProposerID)    
+      args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + theBooking.ProposerID), 
+          t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates}
+      
+      subreply := 0
+      err = client.Call("CalendarHandler.RequestReschedule", args, &subreply)
+      check(err)
+
+      err = client.Close()
+      check(err)
+
+    } else {
+
+      fmt.Println("Need to let everyone know to cancel it!")
+
+      for _, attendeeID := range theBooking.Attendees {
+    
+        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+        check(err) // TODO handle node failure
+
+        args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + attendeeID), theBooking.MeetingID, t.SelfID, req.Time}
+        subreply := 0
+        err = client.Call("CalendarHandler.Cancel", args, &subreply)
+        check(err)
+
+        if subreply != 1 {
+          fmt.Println("CANCEL ROGER FAILED?")
+          os.Exit(1)
+        }
+
+        err = client.Close()
+        check(err)
+
+        fmt.Println("Got CANCEL ROGER")
+      }
+    }
+  }
+
+  fmt.Println(t.MyCalendar.Slots) 
+  *reply = 1
+  return nil
+
+} 
+
+type Reschedule struct {
+  Buffer []byte
+  Rescheduler string
+  ProposerID string
+  MeetingID string
+  Time int
+  Attendees []string
+  Alternates []int
+}
+
+func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
+  
+  fmt.Println("Got a RESCHEDULE from " + req.Rescheduler + " for " + req.MeetingID)
+  theBooking := t.MyCalendar.Slots[req.Time]
+  attendees := theBooking.Attendees
+
+  numRepliesNeeded := len(theBooking.Attendees)
+
+  var timeslots []int
+  for _, time := range req.Alternates {
+    if t.MyCalendar.Slots[time].Status == "A" {
+      timeslots = append(timeslots, time)
+      fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+    }
+  }
+
+  timeslots = append(timeslots, req.Time)
+  fmt.Println("At time " + strconv.Itoa(req.Time) + " try it.")
+
+  theMeeting := Meeting{req.MeetingID, &numRepliesNeeded, req.Attendees, timeslots, make(map[string][]int)} 
+  t.MyMeetings = append(t.MyMeetings, theMeeting)
+
+  if theBooking.MeetingID == req.MeetingID && theBooking.Status == "M" {
+    t.MyCalendar.Slots[req.Time] = Booking{"R", theBooking.MeetingID, theBooking.ProposerID, theBooking.Attendees, timeslots}  
+  }
+
+  for _, time := range req.Alternates {
+    if (t.MyCalendar.Slots[time].Status == "A") {
+      t.MyCalendar.Slots[time] = Booking{"R", theBooking.MeetingID, theBooking.ProposerID, theBooking.Attendees, timeslots}     
+    }
+  }
+
+  for _, attendeeID := range attendees {
+
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+      check(err) // TODO handle node failure
+
+      fmt.Println("Sending RESCHEDULE to " + attendeeID)
+      args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + attendeeID), 
+        req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots}
+      subreply := 0
+      err = client.Call("CalendarHandler.Reschedule", args, &subreply)
+      check(err)
+  }
+
+  *reply = 1
+  return nil
+}
+
+func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
+
+  fmt.Println("Got a RESCHEDULE from " + req.Rescheduler + " for " + req.MeetingID)
+
+  theBooking := t.MyCalendar.Slots[req.Time]
+  if theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID {
+    if theBooking.Status == "M" {
+      fmt.Println("Rescheduling at " + strconv.Itoa(req.Time))
+      t.MyCalendar.Slots[req.Time] = Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.Alternates}
+    }
+  
+    var timeslots []int
+    for _, time := range req.Alternates {
+      if t.MyCalendar.Slots[time].Status == "A" {
+        fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+        booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.Alternates}
+        t.MyCalendar.Slots[time] = booking
+        timeslots = append(timeslots, time)
+      }
+    }
+
+    fmt.Println(t.AddressLookup)
+    fmt.Println(req.ProposerID)
+    fmt.Println(t.MyCalendar)
+    client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID])
+    check(err) // TODO handle node failure
+
+    args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + req.ProposerID), req.MeetingID, t.SelfID, timeslots}
+    subreply := 0
+    err = client.Call("CalendarHandler.Reserve", args, &subreply)
+    check(err)
+
+    err = client.Close()
+    check(err)   
+  }
+
+  *reply = 1
+  return nil
+}
+
+type UserCancel struct {
+  Time int
+}
+
+type Cancel struct {
+  Buffer []byte
+  MeetingID string 
+  ProposerID string 
+  Time int
+}
+
+func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
+
+  theBooking := t.MyCalendar.Slots[req.Time]
+  if theBooking.ProposerID != t.SelfID {
+    fmt.Println("Trying to cancel a meeting that isn't mine!!")
+    return nil
+  }
+
+  if theBooking.Status == "M" {
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+  }
+  
+  for _, attendeeID := range theBooking.Attendees {
+  
+    client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID])
+    check(err) // TODO handle node failure
+
+    fmt.Println("Sending CANCEL to " + attendeeID)
+    args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + attendeeID), theBooking.MeetingID, theBooking.ProposerID, req.Time}
+    subreply := 0
+    err = client.Call("CalendarHandler.Cancel", args, &subreply)
+    check(err)
+
+    if subreply != 1 {
+      fmt.Println("CANCEL ROGER FAILED?")
+      os.Exit(1)
+    }
+
+    err = client.Close()
+    check(err)
+
+    fmt.Println("Got CANCEL ROGER")
+  }
+
+  fmt.Println(t.MyCalendar.Slots)
+  *reply = 1
+  return nil
+}
+
+func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
+  
+  fmt.Println("Got a CANCEL from " + req.ProposerID + " for " + req.MeetingID)
+  
+  if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", "", make([]string, 0), make([]int, 0)}  
+    *reply = 1
+  } 
+  
+  fmt.Println(t.MyCalendar.Slots)
+  return nil
+
 }
 
 /* UTILITY FUNCTIONS */
@@ -295,7 +554,7 @@ func initCalendar(owner string) Calendar {
   
   bookings := make(map[int]Booking) 
   for i := 0; i < 24; i++ {
-    newBooking := Booking{"A", "", "", make([]string, 0)}
+    newBooking := Booking{"A", "", "", make([]string, 0), make([]int, 0)}
     bookings[i] = newBooking
   }
 
@@ -306,7 +565,7 @@ func initCalendar(owner string) Calendar {
 
 func initMeeting() Meeting {
   numRepliesNeeded := 0
-  initialMeeting := Meeting{"InitialID", &numRepliesNeeded, make([]string, 0), make([]int, 0), make(map[string][]int) }
+  initialMeeting := Meeting{"InitialID", &numRepliesNeeded, make([]string, 0), make([]int, 0), make(map[string][]int)}
   return initialMeeting
 }
 
@@ -363,7 +622,7 @@ func main() {
     heartbeatHandler := HeartbeatHandler{Logger, peers}
     rpc.Register(&heartbeatHandler)
 
-    calendarHandler := CalendarHandler{Logger, myName, lookup, initMeeting(), initCalendar(myName)}
+    calendarHandler := CalendarHandler{Logger, myName, lookup, make([]Meeting, 0), initCalendar(myName)}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
