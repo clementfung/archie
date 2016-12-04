@@ -53,6 +53,7 @@ type CalendarHandler struct {
   AddressLookup map[int]Peer
   MyMeetings []Meeting
   MyCalendar Calendar
+  MyCache map[int]Calendar
 }
 
 type Meeting struct {
@@ -64,7 +65,7 @@ type Meeting struct {
 }
 
 type Calendar struct {
-  Owner string
+  Owner int
   Slots map[int]Booking
 }
 
@@ -264,7 +265,7 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
           if time == bestTime {
             t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
           } else {
-            t.MyCalendar.Slots[time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
+            t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
           } 
         }
       }
@@ -289,6 +290,7 @@ type Select struct {
   BestTime int
 }
 
+// Message type 3. Proposer SELECTS to acceptors
 func (t* CalendarHandler) Select(req Select, reply *int) error {
 
   for time, booking := range t.MyCalendar.Slots {
@@ -299,7 +301,7 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
         if time == req.BestTime {
           t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
         } else {
-          t.MyCalendar.Slots[time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
+          t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
         } 
       }
     }
@@ -320,7 +322,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
   theBooking := t.MyCalendar.Slots[req.Time]
   fmt.Println("Oops! I'm busy at " + strconv.Itoa(req.Time))
-  t.MyCalendar.Slots[req.Time] = Booking{"B", "", 0, make([]int, 0), make([]int, 0)}  
+  t.MyCalendar.Slots[req.Time] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}  
 
   if theBooking.Status == "M" {
     
@@ -491,7 +493,7 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
   }
 
   if theBooking.Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
   }
   
   for _, attendeeID := range theBooking.Attendees {
@@ -526,11 +528,34 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
   fmt.Println("Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
   
   if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", 0, make([]int, 0), make([]int, 0)}  
+    t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
     *reply = 1
   } 
   
   fmt.Println(t.MyCalendar.Slots)
+  return nil
+
+}
+
+type CachePush struct {
+  CacheOwner int
+  Push Calendar 
+}
+
+func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
+  
+  _, contains := t.MyCache[req.CacheOwner]
+  fmt.Println(t.MyCache)
+
+  if contains {
+    t.MyCache[req.CacheOwner] = req.Push
+    fmt.Println("Updated Cache of " + t.AddressLookup[req.CacheOwner].Name)
+  } else {
+    fmt.Println("Illegal Cache Update detected...")
+    os.Exit(1)
+  }
+
+  *reply = 1
   return nil
 
 }
@@ -567,11 +592,11 @@ func findIntersectingTime(timeslotMap map[int][]int, requested []int, requestedN
   return -1
 }
 
-func initCalendar(owner string) Calendar {
+func initCalendar(owner int) Calendar {
   
   bookings := make(map[int]Booking) 
   for i := 0; i < 24; i++ {
-    newBooking := Booking{"A", "", 0, make([]int, 0), make([]int, 0)}
+    newBooking := Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
     bookings[i] = newBooking
   }
 
@@ -601,6 +626,9 @@ func main() {
 
     myName := ""
     myNum := 0
+
+    repFactor := 2
+    numNodes := 0
     address := os.Args[1]
     peersfile := os.Args[2]
 
@@ -620,6 +648,7 @@ func main() {
     scanner := bufio.NewScanner(file)
     for scanner.Scan() {
       
+      numNodes++
       peerCombo := scanner.Text()
       peerSplit := strings.Split(peerCombo, ",")
       peerNumStr := peerSplit[0]
@@ -646,7 +675,12 @@ func main() {
     heartbeatHandler := HeartbeatHandler{Logger, peers}
     rpc.Register(&heartbeatHandler)
 
-    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myName)}
+    myCache := make(map[int]Calendar)
+    for i := 1; i <= repFactor; i++ {
+      myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
+    }
+
+    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myNum), myCache}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -658,16 +692,36 @@ func main() {
     status := heartbeatPhase(Logger, listener, address, myName, peers)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger)
+      archieMain(Logger, lookup, &calendarHandler.MyCalendar, myNum, numNodes, repFactor)
     }
 
     fmt.Println("I FAILED")
     os.Exit(1)
 }
 
-func archieMain(Logger *govec.GoLog) {
-  
+func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Calendar, myNodeNum int, numNodes int, repFactor int) {
+
   for {
+
+    time.Sleep(time.Duration(5000) * time.Millisecond)
+    for i := 1; i <= repFactor; i++ {
+      
+      nodeNum := (myNodeNum + i) % numNodes
+      fmt.Println(nodeNum)
+      fmt.Println(addressLookup)
+
+      client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
+      check(err)
+
+      args := CachePush{myNodeNum, *myCalendar}
+      reply := 0
+      err = client.Call("CalendarHandler.CachePush", args, &reply)
+      check(err)
+
+      err = client.Close()
+      check(err)
+
+    }
 
   }
 
