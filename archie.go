@@ -55,6 +55,7 @@ type CalendarHandler struct {
   MyCalendar Calendar
   MyCache map[int]Calendar
   NumNodes int
+  RepFactor int
 }
 
 type Meeting struct {
@@ -124,22 +125,38 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
     for _, attendeeID := range attendeeIDs {
 
-      if (*t.AddressLookup[attendeeID].IsActive) {
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
-        check(err) // TODO handle node failure
+      sent := false
+      isProxy := false
 
-        args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[attendeeID].Name), 
-            theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, false}
+      for i := 0; i <= t.RepFactor; i++ {
+        
+        contactID := (attendeeID + i) % t.NumNodes
+        
+        if (*t.AddressLookup[contactID].IsActive) {        
+          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+          check(err) // TODO handle node failure
 
-        subreply := 0
-        err = client.Call("CalendarHandler.Propose", args, &subreply)
-        check(err)
+          args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
+              theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, isProxy}
 
-        err = client.Close()
-        check(err)
+          subreply := 0
+          err = client.Call("CalendarHandler.Propose", args, &subreply)
+          check(err)
 
-      } else {
-        fmt.Println("Inactive")
+          err = client.Close()
+          check(err)
+          sent = true  
+          
+          break  
+
+        } else {
+          isProxy = true
+        }
+      
+      }
+
+      if (!sent) {
+        fmt.Println("Not enough replicas alive!")
         os.Exit(1)
       }
 
@@ -181,24 +198,40 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     }
   }
 
-  if (*t.AddressLookup[req.ProposerID].IsActive) {
-    client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID].Address)
-    check(err) // TODO handle node failure
+  sent := false
+  isProxy := false
 
-    args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[req.ProposerID].Name), req.MeetingID, t.SelfID, timeslots, false}
-    subreply := 0
-    err = client.Call("CalendarHandler.Reserve", args, &subreply)
-    check(err)
+  for i := 0; i <= t.RepFactor; i++ {
 
-    err = client.Close()
-    check(err)  
+    contactID := (req.ProposerID + i) % t.NumNodes
+      
+    if (*t.AddressLookup[contactID].IsActive) {        
+      
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+      check(err) // TODO handle node failure
 
-    *reply = 1
-  } else {
-    fmt.Println("Inactive")
-    os.Exit(1)
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
+      subreply := 0
+      err = client.Call("CalendarHandler.Reserve", args, &subreply)
+      check(err)
+
+      err = client.Close()
+      check(err)  
+      sent = true  
+      break  
+
+    } else {
+      isProxy = true
+    }
+    
   }
 
+  if (!sent) {
+    fmt.Println("Not enough replicas alive!")
+    os.Exit(1)
+  }
+  
+  *reply = 1
   return nil
 
 }
@@ -248,29 +281,40 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
     for _, attendeeID := range t.MyMeetings[meetingIdx].Attendees {
 
-      if (*t.AddressLookup[attendeeID].IsActive) {
+      sent := false
+      isProxy := false
 
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
-        check(err) // TODO handle node failure
+      for i := 0; i <= t.RepFactor; i++ {
 
-        fmt.Println("Sending SELECT to " + t.AddressLookup[attendeeID].Name)
-        args := Select{dinvRT.PackM(nil, "Sending SELECT to " + t.AddressLookup[attendeeID].Name), myMeeting.MeetingID, t.SelfID, bestTime, false}
-        subreply := 0
-        err = client.Call("CalendarHandler.Select", args, &subreply)
-        check(err)
+        contactID := (attendeeID + i) % t.NumNodes
+          
+        if (*t.AddressLookup[contactID].IsActive) {        
 
-        if subreply != 1 {
-          fmt.Println("ROGER FAILED?")
-          os.Exit(1)
+          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+          check(err) // TODO handle node failure
+
+          fmt.Println("Sending SELECT to " + t.AddressLookup[contactID].Name)
+          args := Select{dinvRT.PackM(nil, "Sending SELECT to " + t.AddressLookup[contactID].Name), myMeeting.MeetingID, t.SelfID, bestTime, isProxy}
+          subreply := 0
+          err = client.Call("CalendarHandler.Select", args, &subreply)
+          check(err)
+
+          err = client.Close()
+          check(err)
+
+          fmt.Println("ROGER DONE")          
+
+          sent = true  
+          break  
+
+        } else {
+          isProxy = true
         }
+        
+      }
 
-        err = client.Close()
-        check(err)
-
-        fmt.Println("ROGER DONE")
-
-      } else {
-        fmt.Println("Inactive")
+      if (!sent) {
+        fmt.Println("Not enough replicas alive!")
         os.Exit(1)
       }
 
@@ -316,6 +360,9 @@ type Select struct {
 // Message type 3. Proposer SELECTS to acceptors
 func (t* CalendarHandler) Select(req Select, reply *int) error {
 
+  fmt.Println("Got SELECT from " + t.AddressLookup[req.ProposerID].Name)
+  dinvRT.UnpackM(req.Buffer, nil, "Got SELECT from " + t.AddressLookup[req.ProposerID].Name)
+
   for time, booking := range t.MyCalendar.Slots {
     
     if booking.MeetingID == req.MeetingID {
@@ -353,24 +400,40 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
     
       fmt.Println("Need to let " + t.AddressLookup[theBooking.ProposerID].Name + " know to reschedule!")
 
-      if (*t.AddressLookup[theBooking.ProposerID].IsActive) {
+      sent := false
+      isProxy := false
 
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID].Address)
-        check(err) // TODO handle node failure
+      for i := 0; i <= t.RepFactor; i++ {
 
-        fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name)    
-        args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name), 
-            t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates, false}
+        contactID := (theBooking.ProposerID + i) % t.NumNodes
+          
+        if (*t.AddressLookup[contactID].IsActive) {        
+
+          client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID].Address)
+          check(err) // TODO handle node failure
+
+          fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name)    
+          args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name), 
+              t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates, isProxy}
+          
+          subreply := 0
+          err = client.Call("CalendarHandler.RequestReschedule", args, &subreply)
+          check(err)
+
+          err = client.Close()
+          check(err)
+
+          sent = true  
+          break  
+
+        } else {
+          isProxy = true
+        }
         
-        subreply := 0
-        err = client.Call("CalendarHandler.RequestReschedule", args, &subreply)
-        check(err)
+      }
 
-        err = client.Close()
-        check(err)
-      
-      } else {
-        fmt.Println("Inactive!")
+      if (!sent) {
+        fmt.Println("Not enough replicas alive!")
         os.Exit(1)
       }
 
@@ -380,28 +443,41 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
       for _, attendeeID := range theBooking.Attendees {
     
-        if (*t.AddressLookup[attendeeID].IsActive) {
+        sent := false
+        isProxy := false
 
-          client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
-          check(err) // TODO handle node failure
+        for i := 0; i <= t.RepFactor; i++ {
 
-          args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[attendeeID].Name), theBooking.MeetingID, t.SelfID, req.Time, false}
-          subreply := 0
-          err = client.Call("CalendarHandler.Cancel", args, &subreply)
-          check(err)
+          contactID := (attendeeID + i) % t.NumNodes
+            
+          if (*t.AddressLookup[contactID].IsActive) {        
 
-          if subreply != 1 {
-            fmt.Println("CANCEL ROGER FAILED?")
-            os.Exit(1)
+            client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+            check(err) // TODO handle node failure
+
+            args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), 
+                theBooking.MeetingID, t.SelfID, req.Time, isProxy}
+
+            subreply := 0
+            err = client.Call("CalendarHandler.Cancel", args, &subreply)
+            check(err)
+
+            err = client.Close()
+            check(err)
+
+            fmt.Println("Got CANCEL ROGER")
+
+            sent = true  
+            break  
+
+          } else {
+            isProxy = true
           }
+          
+        }
 
-          err = client.Close()
-          check(err)
-
-          fmt.Println("Got CANCEL ROGER")
-
-        } else {
-          fmt.Println("Inactive")
+        if (!sent) {
+          fmt.Println("Not enough replicas alive!")
           os.Exit(1)
         }
 
@@ -429,6 +505,7 @@ type Reschedule struct {
 func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   
   fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
+  dinvRT.UnpackM(req.Buffer, nil, "Got RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
   theBooking := t.MyCalendar.Slots[req.Time]
   attendees := theBooking.Attendees
 
@@ -460,31 +537,50 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
 
   for _, attendeeID := range attendees {
 
-      if (*t.AddressLookup[attendeeID].IsActive) {
+    sent := false
+    isProxy := false
 
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
+    for i := 0; i <= t.RepFactor; i++ {
+
+      contactID := (attendeeID + i) % t.NumNodes
+        
+      if (*t.AddressLookup[contactID].IsActive) {        
+
+        client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
         check(err) // TODO handle node failure
 
-        fmt.Println("Sending RESCHEDULE to " + t.AddressLookup[attendeeID].Name)
-        args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + t.AddressLookup[attendeeID].Name), 
-          req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots, false}
+        fmt.Println("Sending RESCHEDULE to " + t.AddressLookup[contactID].Name)
+        args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + t.AddressLookup[contactID].Name), 
+          req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots, isProxy}
         subreply := 0
         err = client.Call("CalendarHandler.Reschedule", args, &subreply)
         check(err)
 
+        sent = true  
+        break  
+
       } else {
-        fmt.Println("Inactive")
-        os.Exit(1)
+        isProxy = true
       }
+      
+    }
+
+    if (!sent) {
+      fmt.Println("Not enough replicas alive!")
+      os.Exit(1)
+    }
+  
   }
 
   *reply = 1
   return nil
+
 }
 
 func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
 
-  fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
+  fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
+  dinvRT.UnpackM(req.Buffer, nil, "Got a RESCHEDULE from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
 
   theBooking := t.MyCalendar.Slots[req.Time]
   if theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID {
@@ -503,19 +599,37 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
       }
     }
 
-    if (*t.AddressLookup[req.ProposerID].IsActive) {
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[req.ProposerID].Address)
-      check(err) // TODO handle node failure
+    sent := false
+    isProxy := false
 
-      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[req.ProposerID].Name), req.MeetingID, t.SelfID, timeslots, false}
-      subreply := 0
-      err = client.Call("CalendarHandler.Reserve", args, &subreply)
-      check(err)
+    for i := 0; i <= t.RepFactor; i++ {
 
-      err = client.Close()
-      check(err)   
-    } else {
-      fmt.Println("Inactive")
+      contactID := (req.ProposerID + i) % t.NumNodes
+        
+      if (*t.AddressLookup[contactID].IsActive) {        
+
+        client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+        check(err) // TODO handle node failure
+
+        args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
+        subreply := 0
+        err = client.Call("CalendarHandler.Reserve", args, &subreply)
+        check(err)
+
+        err = client.Close()
+        check(err) 
+
+        sent = true
+        break
+
+      } else {
+        isProxy = true
+      }
+      
+    }
+
+    if (!sent) {
+      fmt.Println("Not enough replicas alive!")
       os.Exit(1)
     }
   
@@ -550,32 +664,45 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
   }
   
   for _, attendeeID := range theBooking.Attendees {
-  
-    if (*t.AddressLookup[attendeeID].IsActive) {
 
-      client, err := rpc.DialHTTP("tcp", t.AddressLookup[attendeeID].Address)
-      check(err) // TODO handle node failure
+    sent := false
+    isProxy := false
 
-      fmt.Println("Sending CANCEL to " + t.AddressLookup[attendeeID].Name)
-      args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[attendeeID].Name), theBooking.MeetingID, theBooking.ProposerID, req.Time, false}
-      subreply := 0
-      err = client.Call("CalendarHandler.Cancel", args, &subreply)
-      check(err)
+    for i := 0; i <= t.RepFactor; i++ {
 
-      if subreply != 1 {
-        fmt.Println("CANCEL ROGER FAILED?")
-        os.Exit(1)
+      contactID := (attendeeID + i) % t.NumNodes
+        
+      if (*t.AddressLookup[contactID].IsActive) {        
+
+        client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+        check(err) // TODO handle node failure
+
+        fmt.Println("Sending CANCEL to " + t.AddressLookup[contactID].Name)
+        args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), theBooking.MeetingID, 
+            theBooking.ProposerID, req.Time, isProxy}
+
+        subreply := 0
+        err = client.Call("CalendarHandler.Cancel", args, &subreply)
+        check(err)
+
+        err = client.Close()
+        check(err)
+
+        fmt.Println("Got CANCEL ROGER")
+
+        sent = true  
+        break  
+
+      } else {
+        isProxy = true
       }
-
-      err = client.Close()
-      check(err)
-
-      fmt.Println("Got CANCEL ROGER")
-
-    } else {
-      fmt.Println("Inactive")
-      os.Exit(1)
+      
     }
+
+    if (!sent) {
+      fmt.Println("Not enough replicas alive!")
+      os.Exit(1)
+    }  
 
   }
 
@@ -587,7 +714,8 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
 func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
   
   fmt.Println("Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
-  
+  dinvRT.UnpackM(req.Buffer, nil, "Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
+
   if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
     t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
     *reply = 1
@@ -599,14 +727,16 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
 }
 
 type CachePush struct {
+  Buffer []byte
   CacheOwner int
   Push Calendar 
 }
 
 func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
   
+  dinvRT.UnpackM(req.Buffer, nil, "Got CACHE from " + t.AddressLookup[req.CacheOwner].Name)
+
   _, contains := t.MyCache[req.CacheOwner]
-  fmt.Println(t.MyCache)
 
   if contains {
     t.MyCache[req.CacheOwner] = req.Push
@@ -616,6 +746,7 @@ func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
     os.Exit(1)
   }
 
+  fmt.Println(t.MyCache)
   *reply = 1
   return nil
 
@@ -741,7 +872,7 @@ func main() {
       myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }
 
-    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes}
+    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -776,7 +907,7 @@ func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Cal
         client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
         check(err)
 
-        args := CachePush{myNodeNum, *myCalendar}
+        args := CachePush{dinvRT.PackM(nil, "Sending CACHE to " + addressLookup[nodeNum].Address), myNodeNum, *myCalendar}
         reply := 0
         err = client.Call("CalendarHandler.CachePush", args, &reply)
         check(err)
