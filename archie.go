@@ -50,6 +50,7 @@ func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {
 type CalendarHandler struct {
   Logger *govec.GoLog
   SelfID int
+
   AddressLookup map[int]Peer
   MyMeetings []Meeting
   MyCalendar Calendar
@@ -133,15 +134,26 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
         contactID := (attendeeID + i) % t.NumNodes
         
         if (*t.AddressLookup[contactID].IsActive) {        
+          
           client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-          check(err) // TODO handle node failure
+
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
 
           args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
-              theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, isProxy}
+              theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
 
           subreply := 0
           err = client.Call("CalendarHandler.Propose", args, &subreply)
-          check(err)
+          
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
 
           err = client.Close()
           check(err)
@@ -150,6 +162,7 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
           break  
 
         } else {
+          fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
           isProxy = true
         }
       
@@ -179,6 +192,7 @@ type Propose struct {
   ProposerID int
   Attendees []int
   TimeSlots []int
+  AcceptorID int
   IsProxy bool 
 }
 
@@ -189,13 +203,33 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
 
   var timeslots []int
 
-  for _, time := range req.TimeSlots {
-    if t.MyCalendar.Slots[time].Status == "A" {
-      fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
-      booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
-      t.MyCalendar.Slots[time] = booking
-      timeslots = append(timeslots, time)
+  if (req.IsProxy) {
+
+    _, contains := t.MyCache[req.AcceptorID]
+    
+    if contains {
+
+      for _, time := range req.TimeSlots {
+        if t.MyCache[req.AcceptorID].Slots[time].Status == "A" {
+          fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+          booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
+          t.MyCache[req.AcceptorID].Slots[time] = booking
+          timeslots = append(timeslots, time)
+        }
+      }    
     }
+
+  } else {
+
+    for _, time := range req.TimeSlots {
+      if t.MyCalendar.Slots[time].Status == "A" {
+        fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+        booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
+        t.MyCalendar.Slots[time] = booking
+        timeslots = append(timeslots, time)
+      }
+    }
+
   }
 
   sent := false
@@ -208,19 +242,31 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     if (*t.AddressLookup[contactID].IsActive) {        
       
       client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-      check(err) // TODO handle node failure
+
+      if err != nil {
+        fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+        *t.AddressLookup[contactID].IsActive = false
+        continue
+      }
 
       args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
       subreply := 0
       err = client.Call("CalendarHandler.Reserve", args, &subreply)
-      check(err)
+      
+      if err != nil {
+        fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+        *t.AddressLookup[contactID].IsActive = false
+        continue
+      }
 
       err = client.Close()
       check(err)  
+
       sent = true  
       break  
 
     } else {
+      fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
       isProxy = true
     }
     
@@ -291,13 +337,23 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
         if (*t.AddressLookup[contactID].IsActive) {        
 
           client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-          check(err) // TODO handle node failure
+
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
 
           fmt.Println("Sending SELECT to " + t.AddressLookup[contactID].Name)
           args := Select{dinvRT.PackM(nil, "Sending SELECT to " + t.AddressLookup[contactID].Name), myMeeting.MeetingID, t.SelfID, bestTime, isProxy}
           subreply := 0
           err = client.Call("CalendarHandler.Select", args, &subreply)
-          check(err)
+          
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
 
           err = client.Close()
           check(err)
@@ -308,6 +364,7 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
           break  
 
         } else {
+          fmt.Println(t.AddressLookup[contactID].Name + " is inactive. Falling back...")
           isProxy = true
         }
         
@@ -409,16 +466,26 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
           
         if (*t.AddressLookup[contactID].IsActive) {        
 
-          client, err := rpc.DialHTTP("tcp", t.AddressLookup[theBooking.ProposerID].Address)
-          check(err) // TODO handle node failure
+          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
 
-          fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name)    
-          args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[theBooking.ProposerID].Name), 
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
+
+          fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name)    
+          args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name), 
               t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates, isProxy}
           
           subreply := 0
           err = client.Call("CalendarHandler.RequestReschedule", args, &subreply)
-          check(err)
+
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            continue
+          }
 
           err = client.Close()
           check(err)
@@ -427,6 +494,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
           break  
 
         } else {
+          fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
           isProxy = true
         }
         
@@ -453,14 +521,24 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
           if (*t.AddressLookup[contactID].IsActive) {        
 
             client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-            check(err) // TODO handle node failure
+
+            if err != nil {
+              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+              *t.AddressLookup[contactID].IsActive = false
+              continue
+            }
 
             args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), 
                 theBooking.MeetingID, t.SelfID, req.Time, isProxy}
 
             subreply := 0
             err = client.Call("CalendarHandler.Cancel", args, &subreply)
-            check(err)
+
+            if err != nil {
+              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+              *t.AddressLookup[contactID].IsActive = false
+              continue
+            }
 
             err = client.Close()
             check(err)
@@ -471,6 +549,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
             break  
 
           } else {
+            fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
             isProxy = true
           }
           
@@ -547,19 +626,33 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
       if (*t.AddressLookup[contactID].IsActive) {        
 
         client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-        check(err) // TODO handle node failure
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
 
         fmt.Println("Sending RESCHEDULE to " + t.AddressLookup[contactID].Name)
         args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + t.AddressLookup[contactID].Name), 
           req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots, isProxy}
         subreply := 0
         err = client.Call("CalendarHandler.Reschedule", args, &subreply)
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
+
+        err = client.Close()
         check(err)
 
         sent = true  
         break  
 
       } else {
+        fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
         isProxy = true
       }
       
@@ -609,12 +702,22 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
       if (*t.AddressLookup[contactID].IsActive) {        
 
         client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-        check(err) // TODO handle node failure
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
 
         args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
         subreply := 0
         err = client.Call("CalendarHandler.Reserve", args, &subreply)
-        check(err)
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
 
         err = client.Close()
         check(err) 
@@ -623,6 +726,7 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
         break
 
       } else {
+        fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
         isProxy = true
       }
       
@@ -675,7 +779,12 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
       if (*t.AddressLookup[contactID].IsActive) {        
 
         client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-        check(err) // TODO handle node failure
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
 
         fmt.Println("Sending CANCEL to " + t.AddressLookup[contactID].Name)
         args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), theBooking.MeetingID, 
@@ -683,7 +792,12 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
 
         subreply := 0
         err = client.Call("CalendarHandler.Cancel", args, &subreply)
-        check(err)
+        
+        if err != nil {
+          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+          *t.AddressLookup[contactID].IsActive = false
+          continue
+        }
 
         err = client.Close()
         check(err)
@@ -694,6 +808,7 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
         break  
 
       } else {
+        fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
         isProxy = true
       }
       
@@ -905,15 +1020,26 @@ func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Cal
       if (*addressLookup[nodeNum].IsActive) {
 
         client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
-        check(err)
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+          *addressLookup[nodeNum].IsActive = false
+          continue
+        }
 
         args := CachePush{dinvRT.PackM(nil, "Sending CACHE to " + addressLookup[nodeNum].Address), myNodeNum, *myCalendar}
         reply := 0
         err = client.Call("CalendarHandler.CachePush", args, &reply)
-        check(err)
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+          *addressLookup[nodeNum].IsActive = false
+          continue
+        }
 
         err = client.Close()
         check(err)
+
       } else {
         fmt.Println("Inactive")
         os.Exit(1)
