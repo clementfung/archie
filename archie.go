@@ -867,6 +867,11 @@ func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
 
 }
 
+func (t* CalendarHandler) GetCalendar(args int, reply *Calendar) error {
+  *reply = t.MyCalendar
+  return nil
+}
+
 /* UTILITY FUNCTIONS */
 func sliceToMap(theSlice []string) map[string]struct{} {
 
