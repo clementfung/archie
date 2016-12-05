@@ -13,7 +13,8 @@ import (
 
 )
 
-const reset = "\033[m"
+const RESET = "\033[m"
+const SCROLL_TICK = 50 //ms for updating scroll
 
 func main() {
 
@@ -28,7 +29,7 @@ func main() {
     var cal []string
 
     // generate some random slots
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 24; i++ {
 		var state string
 		coinflip := r1.Float64()
 
@@ -67,25 +68,31 @@ func main() {
     // hide cursor (linux only)
 	fmt.Printf("\033[?25l")
 
-    // how to reset after???
-
-
-
+    // how to RESET after???
 
 
 
 	selected_slot := 0
-
-
+	scroll_row := 0 // highest row we see
 
 	// end init
 
+	//fmt.Printf("%v", rows)
+
+	max_row := len(cal) * 3
+
+
+
+	draw_chan := make(chan int)
+	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows)
+	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
+
+
 
 	// draw
-	draw_slots(0, selected_slot, cal)
+	draw_chan <- 1
 
 	key_chan := make(chan string)
-
 	go handle_keys(key_chan)
 
 	for {
@@ -96,12 +103,12 @@ func main() {
 			case "up" :
 				if selected_slot > 0 {
 					selected_slot--
-					draw_slots(0, selected_slot, cal)
+					draw_chan <- 1
 				}
 			case "down" :
 				if selected_slot < (len(cal) - 1) {
 					selected_slot++
-					draw_slots(0, selected_slot, cal)
+					draw_chan <- 1
 				}
 			}
 
@@ -111,15 +118,121 @@ func main() {
 
 }
 
-func draw_slots(start_row int, selected_slot int, cal []string) {
-	move_cursor(start_row, 0)
+func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *[]string, rows *int) {
+	for {
+		select {
+		case <- draw_chan :
+			draw_slots(*scroll_row, *selected_slot, *cal, *rows)
 
-	for i := 0; i < 8; i++ {
-		draw_slot(0, 0, i, cal[i], selected_slot == i)
+		}
+
 	}
 }
 
-func draw_slot(row int, col int, time int, state string, selected bool) {
+// handles scrolling
+func scroller(draw_chan chan int, scroll_row *int, selected_slot *int, rows int, max_row int) {
+
+
+	c := time.Tick(SCROLL_TICK * time.Millisecond)
+
+	for _ = range c {
+		// if the calendar takes up the whole window, then
+		// the ideal location for the selected slot
+		// is in between 1/3 and 2/3 of the screen
+		ideal_top := *scroll_row + rows*1/3
+		ideal_bot := *scroll_row + rows*2/3
+
+		selected_row := *selected_slot * 3
+
+
+
+		if selected_row < ideal_top && *scroll_row > 0 {
+			// if our selected slot is in the top third
+			// scroll UP if we can
+
+			*scroll_row -= 1
+			draw_chan <- 1 // draw
+
+		} else if selected_row > ideal_bot && (*scroll_row + rows) < max_row {
+			// if our selected slot is in the bot third
+			// scroll DOWN if we can
+
+			*scroll_row += 1
+			draw_chan <- 1 // draw
+
+		}
+
+	}
+
+
+}
+
+func draw_slots(scroll_row int, selected_slot int, cal []string, rows int) {
+	move_cursor(0, 0) // change for header
+
+	// current slot
+	slot_i := scroll_row / 3
+
+	remaining_rows := rows
+
+
+	// draw the cutoff first slot if needed
+	switch scroll_row % 3 {
+	case 1 :
+		// need to draw last two rows of first slot
+		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{1, 2}, true)
+		remaining_rows -= 2
+		slot_i++
+
+	case 2 :
+		// need to draw last row of first slot
+		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{2}, true)
+		remaining_rows -= 1
+		slot_i++
+	}
+
+	
+
+	// maximum number of slots that will fit
+	max_slots := min(remaining_rows / 3, len(cal) - slot_i)
+	//debug("max slots: %v", max_slots)
+
+	// draw a bunch of full slots
+	for j := 0; j < max_slots - 1; j++ {
+		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1, 2}, true)
+		remaining_rows -= 3
+		slot_i++
+	}
+
+	// draw the last full slot:
+	//   if remaining_rows % 3 == 0
+	//   then this fits on to the last line, don't print a new line
+	//   if not, then print a new line
+	draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1, 2}, remaining_rows % 3 != 0)
+	remaining_rows -= 3
+	slot_i++
+
+
+	// draw the final cutoff slot if needed
+
+	if slot_i < len(cal) {
+
+		switch remaining_rows {
+		case 1 :
+			// can draw one row of last slot
+			draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0}, false)
+
+		case 2 :
+			// can draw two rows of last slot
+			draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1}, false)
+
+		}
+	}
+
+
+}
+
+func draw_slot(time int, state string, selected bool, visible_rows []int, new_line bool) {
 
 	var label string
 	var time_str string
@@ -158,17 +271,53 @@ func draw_slot(row int, col int, time int, state string, selected bool) {
 
 	if selected {
 		fg = fgcolor("W")
-		fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────┒" + reset + "\n")
-		fmt.Printf("  " + esc("1") + time_str + " ▶" + esc(fg, bg) + "│  " + label + "┃" + reset + "◀" + "\n")
-		fmt.Printf("      " + esc("1", fg, bg) + "┕━━━━━━━━━━━━━┛" + reset + "\n")
-
-	} else {
-		fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────╮" + reset + "\n")
-		fmt.Printf("  " + time_str + "  " + esc("1", fg, bg) + "│  " + label + "│" + reset + "  \n")
-		fmt.Printf("      " + esc("1", fg, bg) + "╰─────────────╯" + reset + "\n")
 	}
 
+	for i, row := range visible_rows {
+		if i < len(visible_rows) - 1 {
+			draw_slot_row(row, fg, bg, time_str, label, selected, true)
+		} else {
+			draw_slot_row(row, fg, bg, time_str, label, selected, new_line)
+		}
 
+	}
+}
+
+func draw_slot_row(row int, fg string, bg string, time_str string, label string, selected bool, new_line bool) {
+	
+	if selected {
+		switch row {
+		case 0 :
+			fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────┒" + RESET + "  ")
+		case 1 :
+			fmt.Printf("  " + esc("1") + time_str + " ▶" + esc(fg, bg) + "│  " + label + "┃" + RESET + "◀")
+		case 2 :
+			fmt.Printf("      " + esc("1", fg, bg) + "┕━━━━━━━━━━━━━┛" + RESET + "  ")
+		}
+
+	} else {
+		switch row {
+		case 0 :
+			fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────╮" + RESET + "  ")
+		case 1 :
+			fmt.Printf("  " + time_str + "  " + esc("1", fg, bg) + "│  " + label + "│" + RESET + "  ")
+		case 2 :
+			fmt.Printf("      " + esc("1", fg, bg) + "╰─────────────╯" + RESET + "  ")
+		}
+
+	}
+
+	if new_line {
+		fmt.Printf ("\n")
+	}
+}
+
+func min(a int, b int) int {
+	if a <= b {
+		return a
+	}
+
+	return b
 }
 
 func screen_size() (int, int) {
@@ -272,4 +421,18 @@ func handle_keys(key_chan chan string) {
 
     }
 
+}
+
+
+// debug, print str to very bottom
+func debug(format string, args ...interface{}) {
+	fmt.Printf("\033[s") // save cursor location
+
+	rows, _ := screen_size()
+
+	move_cursor(rows - 2, 0)
+
+	fmt.Printf(format, args...)
+
+	fmt.Printf("\033[u") // restore cursor location
 }
