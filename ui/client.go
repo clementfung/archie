@@ -97,7 +97,7 @@ func main() {
 
 	screen_clear()
 
-	fmt.Printf("I am the client for %v\n!", my_name)
+	fmt.Printf("I am the client for %v!\n", my_name)
     fmt.Printf("My server address is: %v\n", server_addr)
     fmt.Printf("My client address is: %v\n", client_addr)
 
