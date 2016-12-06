@@ -181,7 +181,7 @@ func main() {
 					propose_ui = false
 					clientHandler.draw_chan <- 1
 
-				case "b" : // begin propose
+				case "enter" : // begin propose
 					propose_ui = false
 
 					client, err := rpc.DialHTTP("tcp", server_addr)
@@ -232,12 +232,12 @@ func main() {
 					}
 
 
-				case "t" : // toggle "A"/"B"
+				case "b" : // toggle "A"/"B"
 				
 					client, err := rpc.DialHTTP("tcp", server_addr)
 					reply := 0
 
-					if state == "A" {
+					if state == "A" || state == "M" {
 
 						err = client.Call("CalendarHandler.UserBusy", selected_slot, &reply)
 						handle_err(err)
@@ -425,7 +425,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		fmt.Printf("q : quit meeting proposal")
 
 		move_cursor(infobox_height + 5, sidebar_col + 5)
-		fmt.Printf("b : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
+		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
 
 		move_cursor(infobox_height + 7, sidebar_col + 5)
 		fmt.Printf("toggle attendees:")
@@ -459,9 +459,11 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 		switch state {
 		case "A" :
-			fmt.Printf("t : toggle available/busy")
+			fmt.Printf("b : toggle available/busy")
 		case "B" :
-			fmt.Printf("t : toggle available/busy")
+			fmt.Printf("b : toggle available/busy")
+		case "M" :
+			fmt.Printf("b : set to busy")
 		default :
 			fmt.Printf("                         ")
 		}
@@ -480,7 +482,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		// a bunch of empty space
 
 		move_cursor(infobox_height + 7, sidebar_col + 5)
-		fmt.Printf("                ")
+		fmt.Printf("                  ")
 
 		curr_row := infobox_height + 8
 
@@ -829,6 +831,11 @@ func handle_keys(key_chan chan string) {
             }
         }
 
+
+        if b[0] == 10 { // line feed
+        	key_chan <- "enter"
+        	continue
+        }
 
         // number
         if b[0] >= 48 && b[0] <= 57 {
