@@ -406,7 +406,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 	if state == "M" {
 		move_cursor(HEADER_ROWS + 2, sidebar_col + 11)
-		fmt.Printf("\"%v\"", cal.Slots[*selected_slot].MeetingID)
+		fmt.Printf("%v", cal.Slots[*selected_slot].MeetingID)
 
 
 		move_cursor(HEADER_ROWS + 5, sidebar_col + 5)
