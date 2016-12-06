@@ -939,8 +939,19 @@ func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
 
 }
 
-func (t* CalendarHandler) GetCalendar(args int, reply *Calendar) error {
-  *reply = t.MyCalendar
+func (t* CalendarHandler) GetCalendar(nodeNum int, reply *Calendar) error {
+  
+  if (t.SelfID == nodeNum) {
+    *reply = t.MyCalendar  
+    return nil
+  } 
+
+  calendar, contains := t.MyCache[nodeNum]
+  if (!contains) {
+    return errors.New("I don't have this calendar.")
+  }
+  
+  *reply = calendar
   return nil
 }
 
@@ -1110,54 +1121,57 @@ func check(err error) {
 ***************/
 func main() {
 
-    fmt.Println("Starting.....")
+  fmt.Println("Starting.....")
 
-    myName := ""
-    myNum := 0
+  myName := ""
+  myNum := 0
 
-    repFactor := 2
-    numNodes := 0
-    address := os.Args[1]
-    peersfile := os.Args[2]
+  repFactor := 2
+  numNodes := 0
+  flag := os.Args[1]
+  address := os.Args[2]
+  peersfile := os.Args[3]
 
-    fmt.Println("Address: " + address)
-    fmt.Println("Peersfile: " + peersfile)
+  fmt.Println("Address: " + address)
+  fmt.Println("Peersfile: " + peersfile)
 
-    Logger := govec.Initialize("Master " + address, "log.txt")
-    dinvRT.GetLogger().LogLocalEvent("Starting...")
+  Logger := govec.Initialize("Master " + address, "log.txt")
+  dinvRT.GetLogger().LogLocalEvent("Starting...")
 
-    var peers []Peer
-    lookup := make(map[int]Peer)
+  var peers []Peer
+  addressLookup := make(map[int]Peer)
 
-    // Open the peersfile
-    file, err := os.Open(peersfile)
+  // Open the peersfile
+  file, err := os.Open(peersfile)
+  check(err)
+  defer file.Close()
+  scanner := bufio.NewScanner(file)
+  for scanner.Scan() {
+    
+    numNodes++
+    peerCombo := scanner.Text()
+    peerSplit := strings.Split(peerCombo, ",")
+    peerNumStr := peerSplit[0]
+    peerName := peerSplit[1]
+    peerAddress := peerSplit[2]
+
+    peerNum, err := strconv.Atoi(peerNumStr)
     check(err)
-    defer file.Close()
-    scanner := bufio.NewScanner(file)
-    for scanner.Scan() {
-      
-      numNodes++
-      peerCombo := scanner.Text()
-      peerSplit := strings.Split(peerCombo, ",")
-      peerNumStr := peerSplit[0]
-      peerName := peerSplit[1]
-      peerAddress := peerSplit[2]
 
-      peerNum, err := strconv.Atoi(peerNumStr)
-      check(err)
-
-      // don't add yourself
-      if peerAddress != address {
-        peer := Peer{peerName, peerAddress, new(bool)}
-        peers = append(peers, peer)
-        lookup[peerNum] = peer
-        fmt.Println("Peer found at: " + peerAddress)
-      } else {
-        myName = peerName
-        myNum = peerNum
-      }
-      
+    // don't add yourself
+    if peerAddress != address {
+      peer := Peer{peerName, peerAddress, new(bool)}
+      peers = append(peers, peer)
+      addressLookup[peerNum] = peer
+      fmt.Println("Peer found at: " + peerAddress)
+    } else {
+      myName = peerName
+      myNum = peerNum
     }
+    
+  }
+
+  if (flag == "-b") {
 
     // Set up for BEAT messages
     heartbeatHandler := HeartbeatHandler{Logger, peers}
@@ -1168,7 +1182,7 @@ func main() {
       myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }
 
-    calendarHandler := CalendarHandler{Logger, myNum, lookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
+    calendarHandler := CalendarHandler{Logger, myNum, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -1180,11 +1194,75 @@ func main() {
     status := heartbeatPhase(Logger, listener, address, myName, peers)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger, lookup, &calendarHandler.MyCalendar, myNum, numNodes, repFactor)
+      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myNum, numNodes, repFactor)
     }
 
     fmt.Println("I FAILED")
     os.Exit(1)
+
+  } else if (flag == "-j") {
+
+    fmt.Println(addressLookup)
+
+    // Assume all others are alive to start
+    for i, _ := range addressLookup {
+      *addressLookup[i].IsActive = true
+    }
+
+    myCache := make(map[int]Calendar)
+    for i := 1; i <= repFactor; i++ {
+      myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
+    }    
+
+    myCalendar := initCalendar(myNum)
+    for i := 0; i < repFactor; i++ {
+      
+      nodeNum := (myNum + (numNodes - repFactor) + i) % numNodes
+      fmt.Println(nodeNum)
+      fmt.Println(addressLookup)
+
+      if (*addressLookup[nodeNum].IsActive) {
+
+        client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
+
+        if err != nil {
+          fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+          *addressLookup[nodeNum].IsActive = false
+          continue
+        }
+
+        err = client.Call("CalendarHandler.GetCalendar", myNum, &myCalendar)
+
+        if err != nil {
+          fmt.Println("Could not retrieve my calendar.")
+          os.Exit(1)
+        }
+
+        err = client.Close()
+        check(err)
+        break
+
+      } else {
+        fmt.Println(addressLookup[nodeNum].Name + " is inactive. Skipping...")
+      }
+    
+    }
+
+    fmt.Println("Starting up!!")
+    calendarHandler := CalendarHandler{Logger, myNum, addressLookup, make([]Meeting, 0), myCalendar, myCache, numNodes, repFactor}
+    rpc.Register(&calendarHandler)
+
+    fmt.Println(calendarHandler.MyCalendar)
+
+    // Export the RPC functions
+    rpc.HandleHTTP()
+    listener,err := net.Listen("tcp", address)
+    check(err)
+    go http.Serve(listener, nil)
+    archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myNum, numNodes, repFactor)
+
+  }
+  
 }
 
 func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Calendar, myNodeNum int, numNodes int, repFactor int) {
