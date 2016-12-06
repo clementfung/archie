@@ -11,8 +11,9 @@ import (
 // From the UI to the proposer
 type UserPropose struct {
   MeetingID string
-  Attendees []string
-  TimeSlots []int
+  Attendees []int
+  MinTime int
+  MaxTime int
 }
 
 type UserBusy struct {
@@ -54,14 +55,17 @@ func main() {
       maxTime, err := strconv.Atoi(timeSplit[1])
       check(err)
 
-      timeslots := make([]int, 0)
+      peerSlice := make([]int, 0)
+      for _, peer := range peerSplit {
+        
+        peerInt, err := strconv.Atoi(peer)
+        check(err)
 
-      for i := minTime; i <= maxTime; i++ {
-        timeslots = append(timeslots, i)
+        peerSlice = append(peerSlice, peerInt)
       }
 
       client, err := rpc.DialHTTP("tcp", address)
-      args := UserPropose{meetingID, peerSplit, timeslots}
+      args := UserPropose{meetingID, peerSlice, minTime, maxTime}
       reply := 0
       err = client.Call("CalendarHandler.UserPropose", args, &reply)
       check(err)
