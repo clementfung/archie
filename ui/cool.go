@@ -14,7 +14,20 @@ import (
 )
 
 const RESET = "\033[m"
-const SCROLL_TICK = 50 //ms for updating scroll
+const SCROLL_TICK = 35 //ms for updating scroll
+
+type Calendar struct {
+  Owner int
+  Slots map[int]Booking
+}
+
+type Booking struct {
+  Status string // A, M, B, R
+  MeetingID string
+  ProposerID int // node that originated the request
+  Attendees []int
+  Alternates []int
+}
 
 func main() {
 
@@ -26,26 +39,25 @@ func main() {
 	s1 := rand.NewSource(time.Now().UnixNano())
     r1 := rand.New(s1)
 
-    var cal []string
-
+    
+    
+    slots := make(map[int]Booking)
+    
     // generate some random slots
 	for i := 0; i < 24; i++ {
-		var state string
 		coinflip := r1.Float64()
 
-		if coinflip < 0.1 {
-			state = "R"
-		} else if coinflip < 0.3 {
-			state = "M"
+		if coinflip < 0.3 {
+			slots[i] = Booking{"M", "surprise party", 2, []int{0, 1, 2}, make([]int, 0)}
 		} else if coinflip < 0.6 {
-			state = "B"
+			slots[i] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}
 		} else {
-			state = "A"
+			slots[i] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
 		}
-
-		cal = append(cal, state)
 	}
 
+	// kuba's calendar
+    cal := Calendar{2, slots}
 
 	screen_clear()
 
@@ -79,12 +91,12 @@ func main() {
 
 	//fmt.Printf("%v", rows)
 
-	max_row := len(cal) * 3
+	max_row := len(cal.Slots) * 3
 
 
 
 	draw_chan := make(chan int)
-	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows)
+	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows, &cols)
 	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
 
 
@@ -106,7 +118,7 @@ func main() {
 					draw_chan <- 1
 				}
 			case "down" :
-				if selected_slot < (len(cal) - 1) {
+				if selected_slot < (len(cal.Slots) - 1) {
 					selected_slot++
 					draw_chan <- 1
 				}
@@ -118,15 +130,106 @@ func main() {
 
 }
 
-func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *[]string, rows *int) {
+func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar, rows *int, cols *int) {
 	for {
 		select {
 		case <- draw_chan :
 			draw_slots(*scroll_row, *selected_slot, *cal, *rows)
+			draw_sidebar(selected_slot, cal, *rows, *cols)
 
 		}
 
 	}
+}
+
+func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
+
+	// requires at least 30+ cols?
+
+	if cols < 40 {
+		return
+	}
+
+	sidebar_col := 28 // col sidebar starts on
+	sidebar_width := cols - sidebar_col
+
+	hor_border := strings.Repeat("┄", sidebar_width - 2)
+	hor_space  := strings.Repeat(" ", sidebar_width - 2)
+	hor_fill   := strings.Repeat("▒", sidebar_width - 2)
+
+	// height of infobox is larger of 12, rows/3
+	infobox_height := max(12, rows/3)
+
+
+	var label string
+	//var time_str string
+	var bg string
+	var fg string
+	state := cal.Slots[*selected_slot].Status
+
+	switch state {
+	case "A" :
+		label = "AVAILABLE  "
+		bg = bgcolor("G")
+		fg = fgcolor("G")
+
+	case "B" :
+		label = "BUSY       "
+		bg = bgcolor("R")
+		fg = fgcolor("R")
+
+	case "R" :
+		label = "RESERVED   "
+		bg = bgcolor("Y")
+		fg = fgcolor("Y")
+
+	case "M" :
+		label = "MEETING    "
+		bg = bgcolor("C")
+		fg = fgcolor("C")
+
+	}
+
+	if label == "" {
+
+	}
+
+
+	fmt.Printf(esc("1", bg, fg))
+
+	move_cursor(1, sidebar_col)
+	fmt.Printf("╓" + hor_border + "┄" + "\n")
+
+	for i := 2; i < infobox_height; i++ {
+		move_cursor(i, sidebar_col)
+		fmt.Printf("║" + hor_space + "▒" + "\n")
+	}
+
+	move_cursor(infobox_height, sidebar_col)
+	fmt.Printf("║" + hor_fill + "▒" + "\n")
+
+
+	move_cursor(2, sidebar_col + 3)
+	fmt.Printf(" █████╗ ██╗   ██╗ █████╗ ██╗██╗      █████╗ ██████╗ ██╗     ███████╗")
+	move_cursor(3, sidebar_col + 3)
+	fmt.Printf("██╔══██╗██║   ██║██╔══██╗██║██║     ██╔══██╗██╔══██╗██║     ██╔════╝")
+	move_cursor(4, sidebar_col + 3)
+	fmt.Printf("███████║██║   ██║███████║██║██║     ███████║██████╔╝██║     █████╗  ")
+	move_cursor(5, sidebar_col + 3)
+	fmt.Printf("██╔══██║╚██╗ ██╔╝██╔══██║██║██║     ██╔══██║██╔══██╗██║     ██╔══╝  ")
+	move_cursor(6, sidebar_col + 3)
+	fmt.Printf("██║  ██║ ╚████╔╝ ██║  ██║██║███████╗██║  ██║██████╔╝███████╗███████╗")
+	move_cursor(7, sidebar_col + 3)
+	fmt.Printf("╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
+
+
+
+
+
+	fmt.Printf(RESET)
+
+
+
 }
 
 // handles scrolling
@@ -167,8 +270,8 @@ func scroller(draw_chan chan int, scroll_row *int, selected_slot *int, rows int,
 
 }
 
-func draw_slots(scroll_row int, selected_slot int, cal []string, rows int) {
-	move_cursor(0, 0) // change for header
+func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
+	move_cursor(1, 1) // change for header
 
 	// current slot
 	slot_i := scroll_row / 3
@@ -180,13 +283,13 @@ func draw_slots(scroll_row int, selected_slot int, cal []string, rows int) {
 	switch scroll_row % 3 {
 	case 1 :
 		// need to draw last two rows of first slot
-		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{1, 2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{1, 2}, true)
 		remaining_rows -= 2
 		slot_i++
 
 	case 2 :
 		// need to draw last row of first slot
-		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{2}, true)
 		remaining_rows -= 1
 		slot_i++
 	}
@@ -194,12 +297,12 @@ func draw_slots(scroll_row int, selected_slot int, cal []string, rows int) {
 	
 
 	// maximum number of slots that will fit
-	max_slots := min(remaining_rows / 3, len(cal) - slot_i)
+	max_slots := min(remaining_rows / 3, len(cal.Slots) - slot_i)
 	//debug("max slots: %v", max_slots)
 
 	// draw a bunch of full slots
 	for j := 0; j < max_slots - 1; j++ {
-		draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1, 2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1, 2}, true)
 		remaining_rows -= 3
 		slot_i++
 	}
@@ -208,23 +311,23 @@ func draw_slots(scroll_row int, selected_slot int, cal []string, rows int) {
 	//   if remaining_rows % 3 == 0
 	//   then this fits on to the last line, don't print a new line
 	//   if not, then print a new line
-	draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1, 2}, remaining_rows % 3 != 0)
+	draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1, 2}, remaining_rows % 3 != 0)
 	remaining_rows -= 3
 	slot_i++
 
 
 	// draw the final cutoff slot if needed
 
-	if slot_i < len(cal) {
+	if slot_i < len(cal.Slots) {
 
 		switch remaining_rows {
 		case 1 :
 			// can draw one row of last slot
-			draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0}, false)
+			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0}, false)
 
 		case 2 :
 			// can draw two rows of last slot
-			draw_slot(slot_i, cal[slot_i], selected_slot == slot_i, []int{0, 1}, false)
+			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1}, false)
 
 		}
 	}
@@ -314,6 +417,14 @@ func draw_slot_row(row int, fg string, bg string, time_str string, label string,
 
 func min(a int, b int) int {
 	if a <= b {
+		return a
+	}
+
+	return b
+}
+
+func max(a int, b int) int {
+	if a >= b {
 		return a
 	}
 
@@ -430,7 +541,7 @@ func debug(format string, args ...interface{}) {
 
 	rows, _ := screen_size()
 
-	move_cursor(rows - 2, 0)
+	move_cursor(rows - 2, 1)
 
 	fmt.Printf(format, args...)
 
