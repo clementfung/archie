@@ -50,14 +50,23 @@ type ClientHandler struct {
 	draw_chan chan int
 }
 
+
+var get_name = make(map[int]string) // map from node num to name
+var get_addr = make(map[int]string) // map from node num to addr
+
+
 func main() {
 
 	// init
 
-    node_num := os.Args[1]
+    node_num, err := strconv.Atoi(os.Args[1])
+    handle_err(err)
     peersfile := os.Args[2]
 
-    my_name, server_addr := get_my_info(node_num, peersfile)
+    read_peers(peersfile)
+
+    my_name := get_name[node_num]
+    server_addr := get_addr[node_num]
     client_addr := increment_addr(server_addr)
 
 
@@ -233,23 +242,6 @@ func (t *ClientHandler) UpdateClient(input Calendar, reply *int) error {
 	return nil
 }
 
-func get_my_info(node_str string, peersfile string) (string, string) {
-	// return an address with port 1 greater than the server's port
-
-	peers := get_peers(peersfile)
-
-	node, err := strconv.Atoi(node_str)
-	handle_err(err)
-
-	for i, peer_str := range peers {
-		if i == node {
-			peer := strings.Split(peer_str, ",")
-			return peer[1], peer[2]
-		}
-	}
-	
-	return "",""
-}
 
 func increment_addr(addr_str string) string {
 	addr := strings.Split(addr_str, ":")
@@ -288,7 +280,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 	sidebar_col := 28 // col sidebar starts on
 	sidebar_width := cols - sidebar_col
 
-	hor_border := strings.Repeat("┄", sidebar_width - 2)
+	hor_border := strings.Repeat("╌", sidebar_width - 2)
 	hor_space  := strings.Repeat(" ", sidebar_width - 2)
 	hor_fill   := strings.Repeat("▒", sidebar_width - 2)
 
@@ -325,11 +317,18 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 	}
 
+	time_str := strconv.Itoa(*selected_slot)
+
+	// prepend 0 to timeslots 00 - 09
+	if *selected_slot < 10 {
+		time_str = "0" + time_str
+	}
+
 
 	fmt.Printf(esc("1", bg, fg))
 
 	move_cursor(1, sidebar_col)
-	fmt.Printf("╓" + hor_border + "┄" + "\n")
+	fmt.Printf("╓" + hor_border + "╌" + "\n")
 
 	for i := 2; i < infobox_height; i++ {
 		move_cursor(i, sidebar_col)
@@ -339,23 +338,40 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 	move_cursor(infobox_height, sidebar_col)
 	fmt.Printf("║" + hor_fill + "▒" + "\n")
 
-/*
-	move_cursor(2, sidebar_col + 3)
-	fmt.Printf(" █████╗ ██╗   ██╗ █████╗ ██╗██╗      █████╗ ██████╗ ██╗     ███████╗")
-	move_cursor(3, sidebar_col + 3)
-	fmt.Printf("██╔══██╗██║   ██║██╔══██╗██║██║     ██╔══██╗██╔══██╗██║     ██╔════╝")
-	move_cursor(4, sidebar_col + 3)
-	fmt.Printf("███████║██║   ██║███████║██║██║     ███████║██████╔╝██║     █████╗  ")
-	move_cursor(5, sidebar_col + 3)
-	fmt.Printf("██╔══██║╚██╗ ██╔╝██╔══██║██║██║     ██╔══██║██╔══██╗██║     ██╔══╝  ")
-	move_cursor(6, sidebar_col + 3)
-	fmt.Printf("██║  ██║ ╚████╔╝ ██║  ██║██║███████╗██║  ██║██████╔╝███████╗███████╗")
-	move_cursor(7, sidebar_col + 3)
-	fmt.Printf("╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
-*/
 
+	// infobox info 
 	move_cursor(2, sidebar_col + 3)
 	fmt.Printf(label)
+
+	move_cursor(4, sidebar_col + 5)
+	fmt.Printf(RESET + esc(bg, fg)) // turn off bold
+	fmt.Printf("time: %vh", time_str)
+
+	if state == "M" {
+		move_cursor(2, sidebar_col + 11)
+		fmt.Printf("\"%v\"", cal.Slots[*selected_slot].MeetingID)
+
+
+		move_cursor(5, sidebar_col + 5)
+
+		proposer_id := cal.Slots[*selected_slot].ProposerID
+
+		fmt.Printf("proposer: %v", get_name[proposer_id])
+
+		attendees := cal.Slots[*selected_slot].Attendees
+
+		row := 6
+		move_cursor(row, sidebar_col + 5)
+		fmt.Printf("attendees: %v", get_name[attendees[0]])
+
+		for i := 1; i < len(attendees); i++ {
+			row++
+			move_cursor(row, sidebar_col + 5)
+			fmt.Printf("           %v", get_name[attendees[i]])
+		}
+
+
+	}
 
 
 	fmt.Printf(RESET)
@@ -762,7 +778,7 @@ func debug(format string, args ...interface{}) {
 }
 
 // read a file by lines
-func get_peers(peersfile string) []string {
+func read_peers(peersfile string) {
     file, err := os.Open(peersfile)
     if err != nil {
         //
@@ -770,12 +786,16 @@ func get_peers(peersfile string) []string {
     defer file.Close()
 
     scanner := bufio.NewScanner(file)
-    peers := make([]string, 0)
+    
     for scanner.Scan() {
-        peers = append(peers, scanner.Text())
-    }
+        peer := strings.Split(scanner.Text(), ",")
 
-    return peers
+        node_num, err := strconv.Atoi(peer[0])
+        handle_err(err)
+
+        get_name[node_num] = peer[1]
+        get_addr[node_num] = peer[2]
+    }
 
 }
 
