@@ -191,6 +191,13 @@ func main() {
 					handle_err(err)
 					clientHandler.draw_chan <- 1
 
+				case "backspace" : // backspace
+
+					if my_proposal.MeetingID != "" {
+						my_proposal.MeetingID = my_proposal.MeetingID[:len(my_proposal.MeetingID) - 1]
+						clientHandler.draw_chan <- 1
+					}
+
 				default :
 
 					if key >= "0" && key <= "9" { // toggle attendees
@@ -210,6 +217,13 @@ func main() {
 
 							clientHandler.draw_chan <- 1
 						}
+					} else if key >= "a" && key <= "z" {
+						my_proposal.MeetingID = my_proposal.MeetingID + key
+
+						clientHandler.draw_chan <- 1
+
+
+
 					}
 				}
 
@@ -436,15 +450,18 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 	if *propose_ui {
 		move_cursor(HEADER_ROWS + infobox_height + 3, sidebar_col + 5)
-		fmt.Printf("q : quit meeting proposal")
+		fmt.Printf("title : %v                     ", my_proposal.MeetingID)
 
 		move_cursor(HEADER_ROWS + infobox_height + 5, sidebar_col + 5)
-		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
+		fmt.Printf("q : quit meeting proposal")
 
 		move_cursor(HEADER_ROWS + infobox_height + 7, sidebar_col + 5)
+		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
+
+		move_cursor(HEADER_ROWS + infobox_height + 9, sidebar_col + 5)
 		fmt.Printf("toggle attendees:")
 
-		curr_row := infobox_height + 8
+		curr_row := infobox_height + 10
 
 
 		for node := 0; node < len(get_name); node++ {
@@ -479,7 +496,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		case "M" :
 			fmt.Printf("b : set to busy           ")
 		default :
-			fmt.Printf("                          ")
+			fmt.Printf("                                  ")
 		}
 
 		// if available
@@ -496,16 +513,19 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		// a bunch of empty space
 
 		move_cursor(HEADER_ROWS + infobox_height + 7, sidebar_col + 5)
-		fmt.Printf("                  ")
+		fmt.Printf("                                      ")
 
-		curr_row := infobox_height + 8
+		move_cursor(HEADER_ROWS + infobox_height + 9, sidebar_col + 5)
+		fmt.Printf("                                      ")
+
+		curr_row := infobox_height + 10
 
 
 		for node := 0; node < len(get_name); node++ {
 
 			move_cursor(HEADER_ROWS + curr_row, sidebar_col + 5)
 
-			fmt.Printf("                       ")
+			fmt.Printf("                                      ")
 			curr_row++
 		}
 
@@ -851,6 +871,11 @@ func handle_keys(key_chan chan string) {
         	continue
         }
 
+    	if b[0] == 127 { // backspace
+    		key_chan <- "backspace"
+    		continue
+    	}
+
         // number
         if b[0] >= 48 && b[0] <= 57 {
         	key := string(b[0])
@@ -870,7 +895,6 @@ func handle_keys(key_chan chan string) {
         	key_chan <- key
     		continue
     	}
-
     }
 
 }
