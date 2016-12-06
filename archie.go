@@ -104,6 +104,7 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
       _, contains := t.AddressLookup[attendeeID]
       if !contains {
         fmt.Println("Got an illegal proposal. Node " + strconv.Itoa(attendeeID) + " does not exist.")
+        return nil
       }
     }
 
@@ -120,7 +121,6 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
       }
     }
 
-    fmt.Println(attendeeIDs)
     for _, attendeeID := range attendeeIDs {
 
       sent := false
@@ -198,9 +198,11 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
             if err != nil {
               fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
               *t.AddressLookup[contactID].IsActive = false
+              isProxy = true
               continue
             }
 
+            fmt.Println("Sending PROPOSE to " + t.AddressLookup[contactID].Name)
             args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
                 theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
 
@@ -210,6 +212,7 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
             if err != nil {
               fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
               *t.AddressLookup[contactID].IsActive = false
+              isProxy = true
               continue
             }
 
@@ -269,7 +272,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     _, contains := t.MyCache[req.AcceptorID]
     
     if contains {
-      fmt.Println("Acting on behalf of " + strconv.Itoa(req.AcceptorID))
+      fmt.Println("Acting on behalf of " + t.AddressLookup[req.AcceptorID].Name)
       timeslots = blockOff(t.MyCache[req.AcceptorID].Slots, requestedBooking, req.TimeSlots)
     }
 
@@ -291,16 +294,24 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
+        isProxy = true
         continue
       }
 
-      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
+      // Used to let the proposer know who's preferences these are
+      sendingID := t.SelfID
+      if (req.IsProxy) {
+        sendingID = req.AcceptorID
+      }
+
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots, isProxy}
       subreply := 0
       err = client.Call("CalendarHandler.Reserve", args, &subreply)
       
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
+        isProxy = true
         continue
       }
 
@@ -491,6 +502,7 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
           if err != nil {
             fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
             *t.AddressLookup[contactID].IsActive = false
+            isProxy = true
             continue
           }
 
@@ -505,6 +517,7 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
           if err != nil {
             fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
             *t.AddressLookup[contactID].IsActive = false
+            isProxy = true
             continue
           }
 
@@ -539,6 +552,22 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
 
           contactID := (attendeeID + i) % t.NumNodes
             
+          if (contactID == t.SelfID) {
+
+             _, contains := t.MyCache[attendeeID]  
+            if contains {
+              if t.MyCache[attendeeID].Slots[time].MeetingID == theBooking.MeetingID && t.MyCache[attendeeID].Slots[time].Status == "M" {
+                t.MyCache[attendeeID].Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+                *reply = 1
+              }
+            }
+
+            fmt.Println("FAKE ROGER DONE")
+            sent = true
+            break
+
+          }
+
           if (*t.AddressLookup[contactID].IsActive) {        
 
             client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
@@ -546,6 +575,7 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
             if err != nil {
               fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
               *t.AddressLookup[contactID].IsActive = false
+              isProxy = true
               continue
             }
 
@@ -558,6 +588,7 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
             if err != nil {
               fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
               *t.AddressLookup[contactID].IsActive = false
+              isProxy = true
               continue
             }
 
@@ -733,6 +764,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
         if err != nil {
           fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
           *t.AddressLookup[contactID].IsActive = false
+          isProxy = true
           continue
         }
 
@@ -745,6 +777,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
         if err != nil {
           fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
           *t.AddressLookup[contactID].IsActive = false
+          isProxy = true
           continue
         }
 
@@ -841,16 +874,24 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
+        isProxy = true
         continue
       }
 
-      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
+      // Used to let the proposer know who's preferences these are
+      sendingID := t.SelfID
+      if (req.IsProxy) {
+        sendingID = req.AcceptorID
+      }
+
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots, isProxy}
       subreply := 0
       err = client.Call("CalendarHandler.Reserve", args, &subreply)
 
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
+        isProxy = true
         continue
       }
 
@@ -906,14 +947,30 @@ func (t* CalendarHandler) UserCancel(time int, reply *int) error {
     for i := 0; i <= t.RepFactor; i++ {
 
       contactID := (attendeeID + i) % t.NumNodes
+       
+      if (contactID == t.SelfID) {
+
+         _, contains := t.MyCache[attendeeID]  
+        if contains {
+          if t.MyCache[attendeeID].Slots[time].MeetingID == theBooking.MeetingID && t.MyCache[attendeeID].Slots[time].Status == "M" {
+            t.MyCache[attendeeID].Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+          }
+        }
         
-      if (*t.AddressLookup[contactID].IsActive) {        
+        fmt.Println("FAKE ROGER DONE")
+        sent = true
+        break
+
+      }
+
+      if (*t.AddressLookup[contactID].IsActive) { 
 
         client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
 
         if err != nil {
           fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
           *t.AddressLookup[contactID].IsActive = false
+          isProxy = true
           continue
         }
 
@@ -927,6 +984,7 @@ func (t* CalendarHandler) UserCancel(time int, reply *int) error {
         if err != nil {
           fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
           *t.AddressLookup[contactID].IsActive = false
+          isProxy = true
           continue
         }
 
@@ -1096,6 +1154,7 @@ func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addr
           if err != nil {
             fmt.Println("Detected a failure on " + addressLookup[contactID].Name + " fallback to next person")
             *addressLookup[contactID].IsActive = false
+            isProxy = true
             continue
           }
 
@@ -1108,6 +1167,7 @@ func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addr
           if err != nil {
             fmt.Println("Detected a failure on " + addressLookup[contactID].Name + " fallback to next person")
             *addressLookup[contactID].IsActive = false
+            isProxy = true
             continue
           }
 
