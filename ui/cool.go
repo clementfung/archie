@@ -49,9 +49,9 @@ func main() {
 	for i := 0; i < 24; i++ {
 		coinflip := r1.Float64()
 
-		if coinflip < 0.3 {
+		if coinflip < 0.1 {
 			slots[i] = Booking{"M", "surprise party", 2, []int{0, 1, 2}, make([]int, 0)}
-		} else if coinflip < 0.6 {
+		} else if coinflip < 0.3 {
 			slots[i] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}
 		} else {
 			slots[i] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
@@ -97,6 +97,10 @@ func main() {
 
 
 
+
+	meeting_ui := false
+
+
 	draw_chan := make(chan int)
 	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows, &cols)
 	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
@@ -113,31 +117,54 @@ func main() {
 		select {
 		case key := <- key_chan :
 
-			switch key {
-			case "up" :
-				if selected_slot > 0 {
-					selected_slot--
-					draw_chan <- 1
-				}
-			case "down" :
-				if selected_slot < (len(cal.Slots) - 1) {
-					selected_slot++
-					draw_chan <- 1
-				}
+			if meeting_ui {
 
+				switch key {
+				case "up" :
+					if selected_slot > 0 {
+						selected_slot--
+						draw_chan <- 1
+					}
+				case "down" :
+					if selected_slot < (len(cal.Slots) - 1) {
+						selected_slot++
+						draw_chan <- 1
+					}
 
-			case "b" : // toggle "A"/"B"
-				state := cal.Slots[selected_slot].Status
-
-				if state == "A" || state == "B" {
-
-
+				case "esc" : // begin propose
 
 
 				}
+
+
+			} else {
+
+				switch key {
+				case "up" :
+					if selected_slot > 0 {
+						selected_slot--
+						draw_chan <- 1
+					}
+				case "down" :
+					if selected_slot < (len(cal.Slots) - 1) {
+						selected_slot++
+						draw_chan <- 1
+					}
+
+
+				case "t" : // toggle "A"/"B"
+					state := cal.Slots[selected_slot].Status
+
+					if state == "A" || state == "B" {
+
+					}
 				
-			}
+				case "m" : // begin propose
 
+
+				}
+
+			}
 
 		}
 	}
@@ -246,20 +273,29 @@ func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
 
 
 	// if available/busy
-	// press b to toggle
+	// press t to toggle
 
 	move_cursor(infobox_height + 3, sidebar_col + 5)
 
 	switch state {
 	case "A" :
-		fmt.Printf("b : toggle available/busy")
+		fmt.Printf("t : toggle available/busy")
 	case "B" :
-		fmt.Printf("b : toggle available/busy")
+		fmt.Printf("t : toggle available/busy")
 	default :
 		fmt.Printf("                         ")
 	}
 
+	// if available
+	// press m to propose
 
+	move_cursor(infobox_height + 5, sidebar_col + 5)
+	switch state {
+	case "A" :
+		fmt.Printf("m : schedule a meeting")
+	default :
+		fmt.Printf("                      ")
+	}
 
 	// 
 
@@ -568,11 +604,17 @@ func handle_keys(key_chan chan string) {
             }
         }
 
+        if (b[0] >= 65 && b[0] <= 90) || (b[0] >= 97 && b[0] <= 122) {
+
         key := string(b[0])
 
-        if key == "b" || key == "B" {
-        	key_chan <- "b"
+        if key == "t" || key == "T" {
+        	key_chan <- "t"
+        } else key == "m" || key == "M" {
+        	key_chan <- "m"
         }
+
+    	}
 
     }
 

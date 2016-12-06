@@ -144,17 +144,17 @@ func main() {
 				}
 
 
-			case "b" : // toggle "A"/"B"
+			case "t" : // toggle "A"/"B"
 				state := clientHandler.MyCalendar.Slots[selected_slot].Status
 
-				client, err := rpc.DialHTTP("tcp", address)
+				client, err := rpc.DialHTTP("tcp", server_addr)
 				reply := 0
 
 				if state == "A" {
 
 					err = client.Call("CalendarHandler.UserBusy", selected_slot, &reply)
 					handle_err(err)
-					
+
 				} else if state == "B" {
 
 					err = client.Call("CalendarHandler.UserAvailable", selected_slot, &reply)
@@ -324,9 +324,9 @@ func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
 
 	switch state {
 	case "A" :
-		fmt.Printf("b : toggle available/busy")
+		fmt.Printf("t : toggle available/busy")
 	case "B" :
-		fmt.Printf("b : toggle available/busy")
+		fmt.Printf("t : toggle available/busy")
 	default :
 		fmt.Printf("                         ")
 	}
@@ -642,8 +642,8 @@ func handle_keys(key_chan chan string) {
 
         key := string(b[0])
 
-        if key == "b" || key == "B" {
-        	key_chan <- "b"
+        if key == "t" || key == "T" {
+        	key_chan <- "t"
         }
 
     }
