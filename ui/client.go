@@ -54,19 +54,21 @@ type ClientHandler struct {
 var get_name = make(map[int]string) // map from node num to name
 var get_addr = make(map[int]string) // map from node num to addr
 
+var my_node int
+var my_name string
 
 func main() {
 
 	// init
 
-    node_num, err := strconv.Atoi(os.Args[1])
+    my_node, err := strconv.Atoi(os.Args[1])
     handle_err(err)
     peersfile := os.Args[2]
 
     read_peers(peersfile)
 
-    my_name := get_name[node_num]
-    server_addr := get_addr[node_num]
+    my_name = get_name[my_node]
+    server_addr := get_addr[my_node]
     client_addr := increment_addr(server_addr)
 
 
@@ -169,10 +171,46 @@ func main() {
 						my_proposal.MaxTime++
 						clientHandler.draw_chan <- 1
 					}
-				case "q" : // begin propose
+
+				case "q" : // cancel propose
 					propose_ui = false
 					clientHandler.draw_chan <- 1
+
+				case "b" : // begin propose
+					propose_ui = false
+
+					client, err := rpc.DialHTTP("tcp", server_addr)
+					reply := 0
+
+					err = client.Call("CalendarHandler.UserPropose", my_proposal, &reply)
+					handle_err(err)
+
+					err = client.Close()
+					handle_err(err)
+					clientHandler.draw_chan <- 1
+
+				default :
+
+					if key >= "0" && key <= "9" { // toggle attendees
+						toggle_node, err := strconv.Atoi(key)
+						handle_err(err)
+
+						// if key pressed is a valid attendee
+						if (toggle_node < len(get_name) && toggle_node != my_node) {
+
+							if contains(my_proposal.Attendees, toggle_node) {
+								// delete that attendee
+								my_proposal.Attendees = delete_elem(my_proposal.Attendees, toggle_node)
+							} else {
+								// add that attendee
+								my_proposal.Attendees = append(my_proposal.Attendees, toggle_node)
+							}
+
+							clientHandler.draw_chan <- 1
+						}
+					}
 				}
+
 
 			} else {
 
@@ -382,7 +420,31 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		fmt.Printf("q : quit meeting proposal")
 
 		move_cursor(infobox_height + 5, sidebar_col + 5)
-		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
+		fmt.Printf("b : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
+
+		move_cursor(infobox_height + 7, sidebar_col + 5)
+		fmt.Printf("toggle attendees")
+
+		curr_row := infobox_height + 8
+
+
+		for node := 0; node < len(get_name); node++ {
+			if node == my_node {
+				continue
+			}
+
+			move_cursor(curr_row, sidebar_col + 5)
+
+			if contains(my_proposal.Attendees, node) {
+				fmt.Printf(esc("1") + " ▸%v : %v", node, get_name[node] + RESET)
+			} else {
+				fmt.Printf("  %v : %v", node, get_name[node])
+			}
+
+
+
+			curr_row++
+		}
 
 
 
@@ -409,6 +471,23 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		default :
 			fmt.Printf("                                      ")
 		}
+
+		// a bunch of empty space
+
+		move_cursor(infobox_height + 7, sidebar_col + 5)
+		fmt.Printf("                ")
+
+		curr_row := infobox_height + 8
+
+
+		for node := 0; node < len(get_name); node++ {
+
+			move_cursor(curr_row, sidebar_col + 5)
+
+			fmt.Printf("                       ")
+			curr_row++
+		}
+
 
 	}
 
@@ -746,6 +825,13 @@ func handle_keys(key_chan chan string) {
         }
 
 
+        // number
+        if b[0] >= 48 && b[0] <= 57 {
+        	key := string(b[0])
+        	key_chan <- key
+    		continue
+    	}
+
 
         if b[0] >= 65 && b[0] <= 90 {
         	key := string(b[0] + 32)
@@ -796,6 +882,42 @@ func read_peers(peersfile string) {
         get_name[node_num] = peer[1]
         get_addr[node_num] = peer[2]
     }
+
+}
+
+func contains(theSlice []int, item int) bool {
+  theMap := sliceToMap(theSlice)
+  _, contains := theMap[item]
+  return contains
+}
+
+func sliceToMap(theSlice []int) map[int]struct{} {
+
+  returnMap := make(map[int]struct{}, len(theSlice))
+  for _, item := range theSlice {
+    returnMap[item] = struct{}{}
+  }
+  return returnMap
+}
+
+// assumes no duplicates
+// returns same slice if not found
+func delete_elem(slice []int, elem int) []int {
+
+	i := -1
+
+	for j, val := range slice {
+		if val == elem {
+			i = j
+			break
+		}
+	}
+
+	if i == -1 {
+		return slice
+	}
+
+	return append(slice[:i], slice[i+1:]...)
 
 }
 
