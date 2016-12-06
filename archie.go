@@ -124,48 +124,111 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
       }
     }
 
+    fmt.Println(attendeeIDs)
     for _, attendeeID := range attendeeIDs {
 
       sent := false
       isProxy := false
+      fmt.Println("Trying to find: " + strconv.Itoa(attendeeID))
 
       for i := 0; i <= t.RepFactor; i++ {
         
         contactID := (attendeeID + i) % t.NumNodes
-        
-        if (*t.AddressLookup[contactID].IsActive) {        
-          
-          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
 
-          if err != nil {
-            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-            *t.AddressLookup[contactID].IsActive = false
-            continue
+        if (contactID == t.SelfID) {
+
+          requestedBooking := Booking{"R", theMeeting.MeetingID, t.SelfID, attendeeIDs, req.TimeSlots}
+          timeslots = blockOff(t.MyCache[attendeeID].Slots, requestedBooking, req.TimeSlots)
+          fmt.Println(timeslots)
+
+          meetingIdx := -1
+          for idx, myMeeting := range t.MyMeetings {
+            if (myMeeting.MeetingID == req.MeetingID) {
+              t.MyMeetings[idx].TimeSlotsMap[attendeeID] = timeslots
+              meetingIdx = idx
+              *t.MyMeetings[idx].NumRepliesNeeded = *t.MyMeetings[idx].NumRepliesNeeded - 1
+              fmt.Println("Proxy: I still need... " + strconv.Itoa(*t.MyMeetings[idx].NumRepliesNeeded))
+              break
+            }
           }
 
-          args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
-              theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
-
-          subreply := 0
-          err = client.Call("CalendarHandler.Propose", args, &subreply)
-          
-          if err != nil {
-            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-            *t.AddressLookup[contactID].IsActive = false
-            continue
+          if (meetingIdx == -1) {
+            fmt.Println("This isn't my meeting?")
+            os.Exit(1)
           }
 
-          err = client.Close()
-          check(err)
-          sent = true  
-          
-          break  
+          sent = true
+          fmt.Println(t.MyMeetings)
+          myMeeting := t.MyMeetings[meetingIdx]
+
+          if (*myMeeting.NumRepliesNeeded == 0) {
+
+            bestTime := selectAndInform(myMeeting, t.MyCache, t.SelfID, t.AddressLookup, t.RepFactor, t.NumNodes)
+
+            fmt.Println(myMeeting)
+            for _, time := range myMeeting.RequestedTimeSlots {
+              
+              booking := t.MyCalendar.Slots[time]
+
+              if booking.MeetingID == myMeeting.MeetingID {
+
+                if (booking.Status == "R") { 
+                  if time == bestTime {
+                    t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
+                  } else {
+                    t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+                  } 
+                }
+              }
+
+            }
+
+            t.MyMeetings[meetingIdx] = t.MyMeetings[len(t.MyMeetings)-1]
+            t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
+            fmt.Println(t.MyCalendar)
+            fmt.Println(t.MyMeetings)
+
+          }
+
+          break
 
         } else {
-          fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
-          isProxy = true
+
+          fmt.Println("Attempting to contact " + t.AddressLookup[contactID].Address)
+          if (*t.AddressLookup[contactID].IsActive) {        
+            
+            client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+
+            if err != nil {
+              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+              *t.AddressLookup[contactID].IsActive = false
+              continue
+            }
+
+            args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
+                theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
+
+            subreply := 0
+            err = client.Call("CalendarHandler.Propose", args, &subreply)
+            
+            if err != nil {
+              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+              *t.AddressLookup[contactID].IsActive = false
+              continue
+            }
+
+            err = client.Close()
+            check(err)
+            sent = true  
+            
+            break  
+
+          } else {
+            fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
+            isProxy = true
+          }   
         }
-      
+
       }
 
       if (!sent) {
@@ -202,6 +265,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
   dinvRT.UnpackM(req.Buffer, nil, "Got PROPOSE from " + t.AddressLookup[req.ProposerID].Name)
 
   var timeslots []int
+  requestedBooking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
 
   if (req.IsProxy) {
 
@@ -209,6 +273,10 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     
     if contains {
 
+      fmt.Println("Acting on behalf of " + strconv.Itoa(req.AcceptorID))
+      timeslots = blockOff(t.MyCache[req.AcceptorID].Slots, requestedBooking, req.TimeSlots)
+
+      /*
       for _, time := range req.TimeSlots {
         if t.MyCache[req.AcceptorID].Slots[time].Status == "A" {
           fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
@@ -216,11 +284,16 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
           t.MyCache[req.AcceptorID].Slots[time] = booking
           timeslots = append(timeslots, time)
         }
-      }    
+      }
+      */
+
     }
 
   } else {
 
+    timeslots = blockOff(t.MyCalendar.Slots, requestedBooking, req.TimeSlots)
+
+    /*
     for _, time := range req.TimeSlots {
       if t.MyCalendar.Slots[time].Status == "A" {
         fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
@@ -229,6 +302,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
         timeslots = append(timeslots, time)
       }
     }
+    */
 
   }
 
@@ -291,6 +365,112 @@ type Reserve struct {
   IsProxy bool
 }
 
+func blockOff(slots map[int]Booking, requestedBooking Booking, requestedTimeSlots []int) []int {
+
+  var timeslots []int
+  for _, time := range requestedTimeSlots {
+    if slots[time].Status == "A" {
+      fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+      slots[time] = requestedBooking
+      timeslots = append(timeslots, time)
+    }
+  }
+  
+  return timeslots
+}
+
+func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addressLookup map[int]Peer, repFactor int, numNodes int) int {
+
+    fmt.Println("Find a time!")
+    bestTime := findIntersectingTime(myMeeting.TimeSlotsMap, myMeeting.RequestedTimeSlots, len(myMeeting.Attendees))
+    
+    if (bestTime == -1) {
+      fmt.Println("No times work!")
+      os.Exit(1)
+    } else {
+      fmt.Println("The best time is at " + strconv.Itoa(bestTime))
+    }
+
+    for _, attendeeID := range myMeeting.Attendees {
+
+      sent := false
+      isProxy := false
+
+      for i := 0; i <= repFactor; i++ {
+
+        contactID := (attendeeID + i) % numNodes
+          
+        // Mock the acceptor, since it is actually in your own cache  
+        if (contactID == myID) {
+
+          _, contains := myCache[attendeeID]
+          if contains {
+            
+            fmt.Println("Acting on behalf of " + strconv.Itoa(attendeeID))
+            
+            for time, booking := range myCache[attendeeID].Slots {
+              if (booking.MeetingID == myMeeting.MeetingID && booking.Status == "R") {
+                if time == bestTime {
+                  myCache[attendeeID].Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
+                } else {
+                  myCache[attendeeID].Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+                } 
+              }
+            }
+          }
+
+          fmt.Println("FAKE ROGER DONE")
+          sent = true
+          break
+
+        } else if (*addressLookup[contactID].IsActive) {        
+
+          client, err := rpc.DialHTTP("tcp", addressLookup[contactID].Address)
+
+          if err != nil {
+            fmt.Println("Detected a failure on " + addressLookup[contactID].Name + " fallback to next person")
+            *addressLookup[contactID].IsActive = false
+            continue
+          }
+
+          fmt.Println("Sending SELECT to " + addressLookup[contactID].Name)
+          args := Select{dinvRT.PackM(nil, "Sending SELECT to " + addressLookup[contactID].Name), myMeeting.MeetingID, myID, 
+            bestTime, attendeeID, isProxy}
+          subreply := 0
+          err = client.Call("CalendarHandler.Select", args, &subreply)
+          
+          if err != nil {
+            fmt.Println("Detected a failure on " + addressLookup[contactID].Name + " fallback to next person")
+            *addressLookup[contactID].IsActive = false
+            continue
+          }
+
+          err = client.Close()
+          check(err)
+
+          fmt.Println("ROGER DONE")          
+
+          sent = true  
+          break  
+
+        } else {
+          fmt.Println(addressLookup[contactID].Name + " is inactive. Falling back...")
+          isProxy = true
+        }
+        
+      }
+
+      if (!sent) {
+        fmt.Println("Not enough replicas alive!")
+        os.Exit(1)
+      }
+
+    }
+
+    return bestTime
+
+}
+
 func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
 
   fmt.Println("Got RESERVE from " + t.AddressLookup[req.AcceptorID].Name)
@@ -312,70 +492,13 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
     os.Exit(1)
   }
 
-  bestTime := -1
   myMeeting := t.MyMeetings[meetingIdx] 
-
-  if (*t.MyMeetings[meetingIdx].NumRepliesNeeded == 0) {   
+  fmt.Println("I am looking for..." + strconv.Itoa(*myMeeting.NumRepliesNeeded))
+  
+  if (*myMeeting.NumRepliesNeeded == 0) {   
     
-    bestTime = findIntersectingTime(myMeeting.TimeSlotsMap, myMeeting.RequestedTimeSlots, len(myMeeting.Attendees))
-    
-    if (bestTime == -1) {
-      fmt.Println("No times work!")
-    } else {
-      fmt.Println("The best time is at " + strconv.Itoa(bestTime))
-    }
-
-    for _, attendeeID := range t.MyMeetings[meetingIdx].Attendees {
-
-      sent := false
-      isProxy := false
-
-      for i := 0; i <= t.RepFactor; i++ {
-
-        contactID := (attendeeID + i) % t.NumNodes
-          
-        if (*t.AddressLookup[contactID].IsActive) {        
-
-          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-
-          if err != nil {
-            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-            *t.AddressLookup[contactID].IsActive = false
-            continue
-          }
-
-          fmt.Println("Sending SELECT to " + t.AddressLookup[contactID].Name)
-          args := Select{dinvRT.PackM(nil, "Sending SELECT to " + t.AddressLookup[contactID].Name), myMeeting.MeetingID, t.SelfID, bestTime, isProxy}
-          subreply := 0
-          err = client.Call("CalendarHandler.Select", args, &subreply)
-          
-          if err != nil {
-            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-            *t.AddressLookup[contactID].IsActive = false
-            continue
-          }
-
-          err = client.Close()
-          check(err)
-
-          fmt.Println("ROGER DONE")          
-
-          sent = true  
-          break  
-
-        } else {
-          fmt.Println(t.AddressLookup[contactID].Name + " is inactive. Falling back...")
-          isProxy = true
-        }
-        
-      }
-
-      if (!sent) {
-        fmt.Println("Not enough replicas alive!")
-        os.Exit(1)
-      }
-
-    }
+    fmt.Println(t.MyMeetings)
+    bestTime := selectAndInform(myMeeting, t.MyCache, t.SelfID, t.AddressLookup, t.RepFactor, t.NumNodes)
 
     fmt.Println(myMeeting)
     for _, time := range myMeeting.RequestedTimeSlots {
@@ -411,6 +534,7 @@ type Select struct {
   MeetingID string
   ProposerID int
   BestTime int
+  AcceptorID int
   IsProxy bool
 }
 
@@ -420,11 +544,29 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
   fmt.Println("Got SELECT from " + t.AddressLookup[req.ProposerID].Name)
   dinvRT.UnpackM(req.Buffer, nil, "Got SELECT from " + t.AddressLookup[req.ProposerID].Name)
 
-  for time, booking := range t.MyCalendar.Slots {
-    
-    if booking.MeetingID == req.MeetingID {
+  if (req.IsProxy) {
 
-      if (booking.Status == "R") { 
+    _, contains := t.MyCache[req.AcceptorID]
+    
+    if contains {
+      
+      fmt.Println("Acting on behalf of " + strconv.Itoa(req.AcceptorID))
+      
+      for time, booking := range t.MyCache[req.AcceptorID].Slots {
+        if (booking.MeetingID == req.MeetingID && booking.Status == "R") {
+          if time == req.BestTime {
+            t.MyCache[req.AcceptorID].Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
+          } else {
+            t.MyCache[req.AcceptorID].Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+          } 
+        }
+      }
+    }
+
+  } else {
+    
+    for time, booking := range t.MyCalendar.Slots {
+      if (booking.MeetingID == req.MeetingID && booking.Status == "R") {
         if time == req.BestTime {
           t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
         } else {
@@ -432,8 +574,7 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
         } 
       }
     }
-
-  }
+  } 
 
   fmt.Println(t.MyCalendar)
 
@@ -476,7 +617,8 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
           fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name)    
           args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name), 
-              t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, theBooking.Alternates, isProxy}
+              t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, 
+              theBooking.Alternates, theBooking.ProposerID, isProxy}
           
           subreply := 0
           err = client.Call("CalendarHandler.RequestReschedule", args, &subreply)
@@ -529,7 +671,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
             }
 
             args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), 
-                theBooking.MeetingID, t.SelfID, req.Time, isProxy}
+                theBooking.MeetingID, t.SelfID, req.Time, attendeeID, isProxy}
 
             subreply := 0
             err = client.Call("CalendarHandler.Cancel", args, &subreply)
@@ -578,6 +720,7 @@ type Reschedule struct {
   Time int
   Attendees []int
   Alternates []int
+  AcceptorID int
   IsProxy bool
 }
 
@@ -585,6 +728,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   
   fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
   dinvRT.UnpackM(req.Buffer, nil, "Got RESCHEDULE from " + t.AddressLookup[req.Rescheduler].Name + " for " + req.MeetingID)
+
   theBooking := t.MyCalendar.Slots[req.Time]
   attendees := theBooking.Attendees
 
@@ -635,7 +779,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
 
         fmt.Println("Sending RESCHEDULE to " + t.AddressLookup[contactID].Name)
         args := Reschedule{dinvRT.PackM(nil, "Sending RESCHEDULE to " + t.AddressLookup[contactID].Name), 
-          req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots, isProxy}
+          req.Rescheduler, req.ProposerID, req.MeetingID, req.Time, req.Attendees, timeslots, attendeeID, isProxy}
         subreply := 0
         err = client.Call("CalendarHandler.Reschedule", args, &subreply)
 
@@ -675,14 +819,44 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
   fmt.Println("Got a RESCHEDULE from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
   dinvRT.UnpackM(req.Buffer, nil, "Got a RESCHEDULE from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
 
-  theBooking := t.MyCalendar.Slots[req.Time]
-  if theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID {
+  var timeslots []int
+  if (req.IsProxy) {
+
+    _, contains := t.MyCache[req.AcceptorID]  
+    if contains { 
+
+      theBooking := t.MyCache[req.AcceptorID].Slots[req.Time]
+      if !(theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID) {
+        return nil
+      }
+
+      if theBooking.Status == "M" {
+        fmt.Println("Rescheduling at " + strconv.Itoa(req.Time))
+        t.MyCache[req.AcceptorID].Slots[req.Time] = Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.Alternates}
+      }
+    
+      for _, time := range req.Alternates {
+        if t.MyCache[req.AcceptorID].Slots[time].Status == "A" {
+          fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
+          booking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.Alternates}
+          t.MyCache[req.AcceptorID].Slots[time] = booking
+          timeslots = append(timeslots, time)
+        }
+      }
+    }
+
+  } else {
+
+    theBooking := t.MyCalendar.Slots[req.Time]
+    if !(theBooking.MeetingID == req.MeetingID || req.Rescheduler == t.SelfID) {
+      return nil
+    }
+
     if theBooking.Status == "M" {
       fmt.Println("Rescheduling at " + strconv.Itoa(req.Time))
       t.MyCalendar.Slots[req.Time] = Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.Alternates}
     }
   
-    var timeslots []int
     for _, time := range req.Alternates {
       if t.MyCalendar.Slots[time].Status == "A" {
         fmt.Println("At time " + strconv.Itoa(time) + " is okay!")
@@ -691,52 +865,51 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
         timeslots = append(timeslots, time)
       }
     }
+  }
 
-    sent := false
-    isProxy := false
+  sent := false
+  isProxy := false
 
-    for i := 0; i <= t.RepFactor; i++ {
+  for i := 0; i <= t.RepFactor; i++ {
 
-      contactID := (req.ProposerID + i) % t.NumNodes
-        
-      if (*t.AddressLookup[contactID].IsActive) {        
-
-        client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-
-        if err != nil {
-          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-          *t.AddressLookup[contactID].IsActive = false
-          continue
-        }
-
-        args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
-        subreply := 0
-        err = client.Call("CalendarHandler.Reserve", args, &subreply)
-
-        if err != nil {
-          fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-          *t.AddressLookup[contactID].IsActive = false
-          continue
-        }
-
-        err = client.Close()
-        check(err) 
-
-        sent = true
-        break
-
-      } else {
-        fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
-        isProxy = true
-      }
+    contactID := (req.ProposerID + i) % t.NumNodes
       
-    }
+    if (*t.AddressLookup[contactID].IsActive) {        
 
-    if (!sent) {
-      fmt.Println("Not enough replicas alive!")
-      os.Exit(1)
+      client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+
+      if err != nil {
+        fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+        *t.AddressLookup[contactID].IsActive = false
+        continue
+      }
+
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, t.SelfID, timeslots, isProxy}
+      subreply := 0
+      err = client.Call("CalendarHandler.Reserve", args, &subreply)
+
+      if err != nil {
+        fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+        *t.AddressLookup[contactID].IsActive = false
+        continue
+      }
+
+      err = client.Close()
+      check(err) 
+
+      sent = true
+      break
+
+    } else {
+      fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
+      isProxy = true
     }
-  
+    
+  }
+
+  if (!sent) {
+    fmt.Println("Not enough replicas alive!")
+    os.Exit(1)
   }
 
   *reply = 1
@@ -752,6 +925,7 @@ type Cancel struct {
   MeetingID string 
   ProposerID int 
   Time int
+  AcceptorID int
   IsProxy bool
 }
 
@@ -788,7 +962,7 @@ func (t* CalendarHandler) UserCancel(req Cancel, reply *int) error {
 
         fmt.Println("Sending CANCEL to " + t.AddressLookup[contactID].Name)
         args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), theBooking.MeetingID, 
-            theBooking.ProposerID, req.Time, isProxy}
+            theBooking.ProposerID, req.Time, attendeeID, isProxy}
 
         subreply := 0
         err = client.Call("CalendarHandler.Cancel", args, &subreply)
@@ -831,10 +1005,23 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
   fmt.Println("Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
   dinvRT.UnpackM(req.Buffer, nil, "Got a CANCEL from " + t.AddressLookup[req.ProposerID].Name + " for " + req.MeetingID)
 
-  if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
-    *reply = 1
-  } 
+  if (req.IsProxy) {
+
+    _, contains := t.MyCache[req.AcceptorID]  
+    if contains {
+      if t.MyCache[req.AcceptorID].Slots[req.Time].MeetingID == req.MeetingID && t.MyCache[req.AcceptorID].Slots[req.Time].Status == "M" {
+        t.MyCache[req.AcceptorID].Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+        *reply = 1
+      }
+    }
+
+  } else {
+    
+    if t.MyCalendar.Slots[req.Time].MeetingID == req.MeetingID && t.MyCalendar.Slots[req.Time].Status == "M" {
+      t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+      *reply = 1
+    }
+  }
   
   fmt.Println(t.MyCalendar.Slots)
   return nil
@@ -1046,8 +1233,7 @@ func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Cal
         check(err)
 
       } else {
-        fmt.Println("Inactive")
-        os.Exit(1)
+        fmt.Println(addressLookup[nodeNum].Name + " is inactive. Skipping...")
       }
 
     }
