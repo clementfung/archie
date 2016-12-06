@@ -13,8 +13,9 @@ import (
 	"time"
 	//"math/rand" // tests
 
-
+	"net"
   	"net/rpc"
+  	"net/http"
 
 )
 
@@ -22,16 +23,22 @@ const RESET = "\033[m"
 const SCROLL_TICK = 35 //ms for updating scroll
 
 type Calendar struct {
-  Owner int
-  Slots map[int]Booking
+	Owner int
+	Slots map[int]Booking
 }
 
 type Booking struct {
-  Status string // A, M, B, R
-  MeetingID string
-  ProposerID int // node that originated the request
-  Attendees []int
-  Alternates []int
+	Status string // A, M, B, R
+	MeetingID string
+	ProposerID int // node that originated the request
+	Attendees []int
+	Alternates []int
+}
+
+/* A handler for calendars */
+type ClientHandler struct {
+	GotFirstPush bool
+	MyCalendar Calendar
 }
 
 func main() {
@@ -66,15 +73,40 @@ func main() {
     cal := Calendar{2, slots}
 	*/
 
+	// 
+
     node_num := os.Args[1]
     peersfile := os.Args[2]
 
-    cal := get_cal(node_num, peersfile)
+    client_addr := get_client_addr(node_num, peersfile)
 
 
+    // set up push endpoint for server
+    // server will update local calendar with UpdateClient
+
+    clientHandler := ClientHandler{}
+
+   	clientHandler.GotFirstPush = false
+
+    rpc.Register(&clientHandler)
+
+    // Export the RPC functions
+    rpc.HandleHTTP()
+    listener,err := net.Listen("tcp", client_addr)
+    handle_err(err)
+    go http.Serve(listener, nil)
 
 
 	screen_clear()
+
+	fmt.Printf("Waiting on server to push calendar for the first time...\n")
+
+	for !clientHandler.GotFirstPush {
+		// only proceed once server has pushed calendar
+	}
+
+	screen_clear()
+
 
 	rows, cols := screen_size()
 
@@ -106,12 +138,13 @@ func main() {
 
 	//fmt.Printf("%v", rows)
 
-	max_row := len(cal.Slots) * 3
+
+	max_row := len(clientHandler.MyCalendar.Slots) * 3
 
 
 
 	draw_chan := make(chan int)
-	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows, &cols)
+	go draw (draw_chan, &scroll_row, &selected_slot, &clientHandler.MyCalendar, &rows, &cols)
 	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
 
 
@@ -133,14 +166,14 @@ func main() {
 					draw_chan <- 1
 				}
 			case "down" :
-				if selected_slot < (len(cal.Slots) - 1) {
+				if selected_slot < (len(clientHandler.MyCalendar.Slots) - 1) {
 					selected_slot++
 					draw_chan <- 1
 				}
 
 
 			case "b" : // toggle "A"/"B"
-				state := cal.Slots[selected_slot].Status
+				state := clientHandler.MyCalendar.Slots[selected_slot].Status
 
 				if state == "A" || state == "B" {
 
@@ -157,32 +190,44 @@ func main() {
 
 }
 
-func get_cal(node_str string, peersfile string) Calendar {
+func (t *ClientHandler) UpdateClient(input Calendar, reply *int) error {
+	t.MyCalendar = input 
+	*reply = 1
+
+	if !t.GotFirstPush {
+		t.GotFirstPush = true
+	}
+
+
+	return nil
+}
+
+func get_client_addr(node_str string, peersfile string) string {
+	// return an address with port 1 greater than the server's port
+
 	peers := get_peers(peersfile)
 
-	var my_server_addr string
 	node, err := strconv.Atoi(node_str)
 	handle_err(err)
+
+	var my_server_addr []string
 
 	for i, peer_str := range peers {
 		if i == node {
 			peer := strings.Split(peer_str, ",")
-			my_server_addr = peer[2]
+			my_server_addr = strings.Split(peer[2], ":")
 		}
 	}
 	
-
-	client, err := rpc.DialHTTP("tcp", my_server_addr)
-	
-	reply := Calendar{node, make(map[int]Booking)}
-
-	err = client.Call("CalendarHandler.GetCalendar", 0, &reply)
+	port, err := strconv.Atoi(my_server_addr[1])
 	handle_err(err)
 
-	err = client.Close()
-	handle_err(err)
+	port += 1
 
-	return reply
+	my_server_addr[1] = strconv.Itoa(port)
+
+	return strings.Join(my_server_addr, ":")
+
 }
 
 
@@ -658,3 +703,8 @@ func handle_err(err error) {
         panic(err)
     }
 }
+
+
+
+
+

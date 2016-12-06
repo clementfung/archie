@@ -12,8 +12,6 @@ import (
 	"math/rand" // tests
 
 
-  	"net/rpc"
-
 )
 
 const RESET = "\033[m"
@@ -38,7 +36,7 @@ func main() {
 
 	// init
 
-	/*
+	
 	// seed a RNG with current time in nanoseconds
 	s1 := rand.NewSource(time.Now().UnixNano())
     r1 := rand.New(s1)
@@ -62,16 +60,6 @@ func main() {
 
 	// kuba's calendar
     cal := Calendar{2, slots}
-	*/
-
-    node_num := os.Args[1]
-    peersfile := os.Args[2]
-
-
-    cal := get_cal(node_num, peersfile)
-
-
-
 
 	screen_clear()
 
@@ -139,7 +127,7 @@ func main() {
 
 
 			case "b" : // toggle "A"/"B"
-				state := cal.Slots[*selected_slot].Status
+				state := cal.Slots[selected_slot].Status
 
 				if state == "A" || state == "B" {
 
@@ -155,14 +143,6 @@ func main() {
 	}
 
 }
-
-func get_cal(node int) {
-	peers := get_peers("../peersfile.txt")
-
-
-
-}
-
 
 
 func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar, rows *int, cols *int) {
@@ -612,27 +592,3 @@ func debug(format string, args ...interface{}) {
 	fmt.Printf("\033[u") // restore cursor location
 }
 
-// read a file by lines
-func get_peers(peersfile string) []string {
-    file, err := os.Open(peersfile)
-    if err != nil {
-        //
-    }
-    defer file.Close()
-
-    scanner := bufio.NewScanner(file)
-    peers := make([]string, 0)
-    for scanner.Scan() {
-        peers = append(peers, scanner.Text())
-    }
-
-    return peers
-
-}
-
-// handles an error by printing it
-func handle_err(err error) {
-    if err != nil {
-        fmt.Println("error:", err)
-    }
-}
