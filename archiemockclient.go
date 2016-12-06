@@ -78,9 +78,8 @@ func main() {
       check(err)
 
       client, err := rpc.DialHTTP("tcp", address)
-      args := UserBusy{intTime}
       reply := 0
-      err = client.Call("CalendarHandler.UserBusy", args, &reply)
+      err = client.Call("CalendarHandler.UserBusy", intTime, &reply)
       check(err)
 
       err = client.Close()
@@ -95,9 +94,24 @@ func main() {
       check(err)
 
       client, err := rpc.DialHTTP("tcp", address)
-      args := UserCancel{intTime}
       reply := 0
-      err = client.Call("CalendarHandler.UserCancel", args, &reply)
+      err = client.Call("CalendarHandler.UserCancel", intTime, &reply)
+      check(err)
+
+      err = client.Close()
+      check(err)
+
+    } else if commandFlag == "-a" {
+
+      address := os.Args[2]
+      time := os.Args[3]
+
+      intTime, err := strconv.Atoi(time)
+      check(err)
+
+      client, err := rpc.DialHTTP("tcp", address)
+      reply := 0
+      err = client.Call("CalendarHandler.UserAvailable", intTime, &reply)
       check(err)
 
       err = client.Close()

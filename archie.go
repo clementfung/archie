@@ -50,7 +50,7 @@ func (t *HeartbeatHandler) Beat(req Heartbeat, reply *int) error {
 type CalendarHandler struct {
   Logger *govec.GoLog
   SelfID int
-
+  Address string
   AddressLookup map[int]Peer
   MyMeetings []Meeting
   MyCalendar Calendar
@@ -243,6 +243,7 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
     return errors.New("Already attempting meetingID " + req.MeetingID)
   }
 
+  updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
 
@@ -325,6 +326,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     os.Exit(1)
   }
   
+  updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
 
@@ -390,6 +392,8 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
     t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
     fmt.Println(t.MyCalendar)
     fmt.Println(t.MyMeetings)
+    updateToClient(t.MyCalendar, t.Address)
+
   }
 
   *reply = 1
@@ -445,37 +449,31 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
   } 
 
   fmt.Println(t.MyCalendar)
+  updateToClient(t.MyCalendar, t.Address)
 
   *reply = 1
   return nil
 }
 
-type UserAvailable struct {
-  Time int
-}
+func (t* CalendarHandler) UserAvailable(time int, reply *int) error {
 
-func (t* CalendarHandler) UserAvailable(req UserAvailable, reply *int) error {
-
-  if (t.MyCalendar.Slots[req.Time].Status == "B") {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
+  if (t.MyCalendar.Slots[time].Status == "B") {
+    t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
     *reply = 1
   } else {
     *reply = 0
   }
 
+  updateToClient(t.MyCalendar, t.Address)
   return nil
 
 }
 
-type UserBusy struct {
-  Time int
-}
+func (t* CalendarHandler) UserBusy(time int, reply *int) error {
 
-func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
-
-  theBooking := t.MyCalendar.Slots[req.Time]
-  fmt.Println("Oops! I'm busy at " + strconv.Itoa(req.Time))
-  t.MyCalendar.Slots[req.Time] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}  
+  theBooking := t.MyCalendar.Slots[time]
+  fmt.Println("Oops! I'm busy at " + strconv.Itoa(time))
+  t.MyCalendar.Slots[time] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}  
 
   if theBooking.Status == "M" {
     
@@ -502,7 +500,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
 
           fmt.Println("Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name)    
           args := Reschedule{dinvRT.PackM(nil, "Requesting a RESCHEDULE from " + t.AddressLookup[contactID].Name), 
-              t.SelfID, theBooking.ProposerID, theBooking.MeetingID, req.Time, theBooking.Attendees, 
+              t.SelfID, theBooking.ProposerID, theBooking.MeetingID, time, theBooking.Attendees, 
               theBooking.Alternates, theBooking.ProposerID, isProxy}
           
           subreply := 0
@@ -556,7 +554,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
             }
 
             args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), 
-                theBooking.MeetingID, t.SelfID, req.Time, attendeeID, isProxy}
+                theBooking.MeetingID, t.SelfID, time, attendeeID, isProxy}
 
             subreply := 0
             err = client.Call("CalendarHandler.Cancel", args, &subreply)
@@ -592,6 +590,7 @@ func (t* CalendarHandler) UserBusy(req UserBusy, reply *int) error {
   }
 
   fmt.Println(t.MyCalendar.Slots) 
+  updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
 
@@ -694,6 +693,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   
   }
 
+  updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
 
@@ -797,12 +797,9 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
     os.Exit(1)
   }
 
+  updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
-}
-
-type UserCancel struct {
-  Time int
 }
 
 type Cancel struct {
@@ -814,16 +811,16 @@ type Cancel struct {
   IsProxy bool
 }
 
-func (t* CalendarHandler) UserCancel(req UserCancel, reply *int) error {
+func (t* CalendarHandler) UserCancel(time int, reply *int) error {
 
-  theBooking := t.MyCalendar.Slots[req.Time]
+  theBooking := t.MyCalendar.Slots[time]
   if theBooking.ProposerID != t.SelfID {
     fmt.Println("Trying to cancel a meeting that isn't mine!!")
     return nil
   }
 
   if theBooking.Status == "M" {
-    t.MyCalendar.Slots[req.Time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+    t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
   }
   
   for _, attendeeID := range theBooking.Attendees {
@@ -847,7 +844,7 @@ func (t* CalendarHandler) UserCancel(req UserCancel, reply *int) error {
 
         fmt.Println("Sending CANCEL to " + t.AddressLookup[contactID].Name)
         args := Cancel{dinvRT.PackM(nil, "Sending CANCEL to " + t.AddressLookup[contactID].Name), theBooking.MeetingID, 
-            theBooking.ProposerID, req.Time, attendeeID, isProxy}
+            theBooking.ProposerID, time, attendeeID, isProxy}
 
         subreply := 0
         err = client.Call("CalendarHandler.Cancel", args, &subreply)
@@ -909,6 +906,7 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
   }
   
   fmt.Println(t.MyCalendar.Slots)
+  updateToClient(t.MyCalendar, t.Address)
   return nil
 
 }
@@ -1060,6 +1058,37 @@ func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addr
 }
 
 /* UTILITY FUNCTIONS */
+func updateToClient(calendar Calendar, address string) {
+
+  client, err := rpc.DialHTTP("tcp", incrementAddress(address))
+  subreply := 0
+  
+  if err != nil {
+    return
+  }
+
+  err = client.Call("ClientHandler.UpdateClient", calendar, &subreply)
+  if err != nil {
+    return
+  }
+
+  err = client.Close()
+  if err != nil {
+    return
+  }
+
+}
+
+func incrementAddress(addr_str string) string {
+  addr := strings.Split(addr_str, ":")
+  port, err := strconv.Atoi(addr[1])
+  check(err)
+
+  port += 1
+  addr[1] = strconv.Itoa(port)
+  return strings.Join(addr, ":")
+}
+
 func sliceToMap(theSlice []string) map[string]struct{} {
 
   returnMap := make(map[string]struct{}, len(theSlice))
@@ -1182,7 +1211,7 @@ func main() {
       myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }
 
-    calendarHandler := CalendarHandler{Logger, myNum, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
+    calendarHandler := CalendarHandler{Logger, myNum, address, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -1249,7 +1278,7 @@ func main() {
     }
 
     fmt.Println("Starting up!!")
-    calendarHandler := CalendarHandler{Logger, myNum, addressLookup, make([]Meeting, 0), myCalendar, myCache, numNodes, repFactor}
+    calendarHandler := CalendarHandler{Logger, myNum, address, addressLookup, make([]Meeting, 0), myCalendar, myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     fmt.Println(calendarHandler.MyCalendar)
