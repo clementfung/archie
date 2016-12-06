@@ -162,7 +162,7 @@ func main() {
 					}
 				case "q" : // begin propose
 					propose_ui = false
-					draw_chan <- 1
+					clientHandler.draw_chan <- 1
 				}
 
 			} else {
@@ -207,7 +207,7 @@ func main() {
 						my_proposal.MinTime = selected_slot
 						my_proposal.MaxTime = selected_slot
 
-						draw_chan <- 1
+						clientHandler.draw_chan <- 1
 
 					}
 				}
