@@ -37,8 +37,9 @@ type Booking struct {
 
 /* A handler for calendars */
 type ClientHandler struct {
-	GotFirstPush bool
 	MyCalendar Calendar
+	GotFirstPush bool
+	draw_chan chan int
 }
 
 func main() {
@@ -87,6 +88,7 @@ func main() {
     clientHandler := ClientHandler{}
 
    	clientHandler.GotFirstPush = false
+   	clientHandler.draw_chan = make(chan int)
 
     rpc.Register(&clientHandler)
 
@@ -143,14 +145,9 @@ func main() {
 
 
 
-	draw_chan := make(chan int)
-	go draw (draw_chan, &scroll_row, &selected_slot, &clientHandler.MyCalendar, &rows, &cols)
-	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
+	go draw (clientHandler.draw_chan, &scroll_row, &selected_slot, &clientHandler.MyCalendar, &rows, &cols)
+	go scroller(clientHandler.draw_chan, &scroll_row, &selected_slot, rows, max_row)
 
-
-
-	// draw
-	draw_chan <- 1
 
 	key_chan := make(chan string)
 	go handle_keys(key_chan)
@@ -163,12 +160,12 @@ func main() {
 			case "up" :
 				if selected_slot > 0 {
 					selected_slot--
-					draw_chan <- 1
+					clientHandler.draw_chan <- 1
 				}
 			case "down" :
 				if selected_slot < (len(clientHandler.MyCalendar.Slots) - 1) {
 					selected_slot++
-					draw_chan <- 1
+					clientHandler.draw_chan <- 1
 				}
 
 
@@ -198,6 +195,7 @@ func (t *ClientHandler) UpdateClient(input Calendar, reply *int) error {
 		t.GotFirstPush = true
 	}
 
+	t.draw_chan <- 1 // tell client to draw
 
 	return nil
 }
@@ -210,24 +208,29 @@ func get_client_addr(node_str string, peersfile string) string {
 	node, err := strconv.Atoi(node_str)
 	handle_err(err)
 
-	var my_server_addr []string
+	var my_server_addr string
 
 	for i, peer_str := range peers {
 		if i == node {
 			peer := strings.Split(peer_str, ",")
-			my_server_addr = strings.Split(peer[2], ":")
+			my_server_addr = peer[2]
 		}
 	}
 	
-	port, err := strconv.Atoi(my_server_addr[1])
+	return addr_port_plus_one (my_server_addr)
+
+}
+
+func addr_port_plus_one(addr_str string) string {
+	addr := strings.Split(addr_str, ":")
+	port, err := strconv.Atoi(addr[1])
 	handle_err(err)
 
 	port += 1
 
-	my_server_addr[1] = strconv.Itoa(port)
+	addr[1] = strconv.Itoa(port)
 
-	return strings.Join(my_server_addr, ":")
-
+	return strings.Join(addr, ":")
 }
 
 
