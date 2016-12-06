@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"bufio"
+
 	"strings"
 	"strconv"
 
@@ -9,7 +11,7 @@ import (
 	"os/exec"
 
 	"time"
-	"math/rand" // tests
+	//"math/rand" // tests
 
 
   	"net/rpc"
@@ -66,7 +68,6 @@ func main() {
 
     node_num := os.Args[1]
     peersfile := os.Args[2]
-
 
     cal := get_cal(node_num, peersfile)
 
@@ -139,7 +140,7 @@ func main() {
 
 
 			case "b" : // toggle "A"/"B"
-				state := cal.Slots[*selected_slot].Status
+				state := cal.Slots[selected_slot].Status
 
 				if state == "A" || state == "B" {
 
@@ -156,11 +157,32 @@ func main() {
 
 }
 
-func get_cal(node int) {
-	peers := get_peers("../peersfile.txt")
+func get_cal(node_str string, peersfile string) Calendar {
+	peers := get_peers(peersfile)
 
+	var my_server_addr string
+	node, err := strconv.Atoi(node_str)
+	handle_err(err)
 
+	for i, peer_str := range peers {
+		if i == node {
+			peer := strings.Split(peer_str, ",")
+			my_server_addr = peer[2]
+		}
+	}
+	
 
+	client, err := rpc.DialHTTP("tcp", my_server_addr)
+	
+	reply := Calendar{node, make(map[int]Booking)}
+
+	err = client.Call("CalendarHandler.GetCalendar", 0, &reply)
+	handle_err(err)
+
+	err = client.Close()
+	handle_err(err)
+
+	return reply
 }
 
 
@@ -633,6 +655,6 @@ func get_peers(peersfile string) []string {
 // handles an error by printing it
 func handle_err(err error) {
     if err != nil {
-        fmt.Println("error:", err)
+        panic(err)
     }
 }

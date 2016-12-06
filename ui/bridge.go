@@ -72,6 +72,6 @@ func get_peers(peersfile string) []string {
 // handles an error by printing it
 func handle_err(err error) {
     if err != nil {
-        fmt.Println("error:", err)
+        panic(err)
     }
 }
