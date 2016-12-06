@@ -316,8 +316,8 @@ func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar
 		select {
 		case <- draw_chan :
 			draw_header(*cols)
-			draw_slots(propose_ui, my_proposal, *scroll_row, *selected_slot, *cal, *rows)
 			draw_sidebar(propose_ui, my_proposal, selected_slot, cal, *rows, *cols)
+			draw_slots(propose_ui, my_proposal, *scroll_row, *selected_slot, *cal, *rows)
 
 		}
 
