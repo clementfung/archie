@@ -1117,7 +1117,6 @@ func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addr
     
     if (bestTime == -1) {
       fmt.Println("No times work!")
-      os.Exit(1)
     } else {
       fmt.Println("The best time is at " + strconv.Itoa(bestTime))
     }
