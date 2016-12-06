@@ -44,42 +44,13 @@ type ClientHandler struct {
 
 func main() {
 
-
-
 	// init
-
-	/*
-	// seed a RNG with current time in nanoseconds
-	s1 := rand.NewSource(time.Now().UnixNano())
-    r1 := rand.New(s1)
-
-    
-    
-    slots := make(map[int]Booking)
-    
-    // generate some random slots
-	for i := 0; i < 24; i++ {
-		coinflip := r1.Float64()
-
-		if coinflip < 0.3 {
-			slots[i] = Booking{"M", "surprise party", 2, []int{0, 1, 2}, make([]int, 0)}
-		} else if coinflip < 0.6 {
-			slots[i] = Booking{"B", "", -1, make([]int, 0), make([]int, 0)}
-		} else {
-			slots[i] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}
-		}
-	}
-
-	// kuba's calendar
-    cal := Calendar{2, slots}
-	*/
-
-	// 
 
     node_num := os.Args[1]
     peersfile := os.Args[2]
 
-    client_addr := get_client_addr(node_num, peersfile)
+    my_name, server_addr := get_my_info(node_num, peersfile)
+    client_addr := increment_addr(server_addr)
 
 
     // set up push endpoint for server
@@ -100,6 +71,10 @@ func main() {
 
 
 	screen_clear()
+
+	fmt.Printf("I am the client for %v\n!", my_name)
+    fmt.Printf("My server address is: %v\n", server_addr)
+    fmt.Printf("My client address is: %v\n", client_addr)
 
 	fmt.Printf("Waiting on server to push calendar for the first time...\n")
 
@@ -172,12 +147,22 @@ func main() {
 			case "b" : // toggle "A"/"B"
 				state := clientHandler.MyCalendar.Slots[selected_slot].Status
 
-				if state == "A" || state == "B" {
+				client, err := rpc.DialHTTP("tcp", address)
+				reply := 0
 
+				if state == "A" {
 
+					err = client.Call("CalendarHandler.UserBusy", selected_slot, &reply)
+					handle_err(err)
+					
+				} else if state == "B" {
 
-
+					err = client.Call("CalendarHandler.UserAvailable", selected_slot, &reply)
+					handle_err(err)
 				}
+
+				err = client.Close()
+				handle_err(err)
 				
 			}
 
@@ -200,7 +185,7 @@ func (t *ClientHandler) UpdateClient(input Calendar, reply *int) error {
 	return nil
 }
 
-func get_client_addr(node_str string, peersfile string) string {
+func get_my_info(node_str string, peersfile string) (string, string) {
 	// return an address with port 1 greater than the server's port
 
 	peers := get_peers(peersfile)
@@ -208,20 +193,17 @@ func get_client_addr(node_str string, peersfile string) string {
 	node, err := strconv.Atoi(node_str)
 	handle_err(err)
 
-	var my_server_addr string
-
 	for i, peer_str := range peers {
 		if i == node {
 			peer := strings.Split(peer_str, ",")
-			my_server_addr = peer[2]
+			return peer[1], peer[2]
 		}
 	}
 	
-	return addr_port_plus_one (my_server_addr)
-
+	return "",""
 }
 
-func addr_port_plus_one(addr_str string) string {
+func increment_addr(addr_str string) string {
 	addr := strings.Split(addr_str, ":")
 	port, err := strconv.Atoi(addr[1])
 	handle_err(err)
