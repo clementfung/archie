@@ -21,6 +21,7 @@ import (
 
 const RESET = "\033[m"
 const SCROLL_TICK = 35 //ms for updating scroll
+const HEADER_ROWS = 2
 
 type Calendar struct {
 	Owner int
@@ -114,11 +115,7 @@ func main() {
 	// need to constrain rows to workable size for scroll
 
 	// i.e. subtract rows for header, footer, etc.
-	
-
-	if rows + cols == 0 {
-
-	}
+	rows -= HEADER_ROWS
 
 	// disable input buffering
     exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
@@ -304,12 +301,33 @@ func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar
 	for {
 		select {
 		case <- draw_chan :
+			draw_header(*cols)
 			draw_slots(propose_ui, my_proposal, *scroll_row, *selected_slot, *cal, *rows)
 			draw_sidebar(propose_ui, my_proposal, selected_slot, cal, *rows, *cols)
 
 		}
 
 	}
+}
+
+func draw_header(cols int) {
+	move_cursor(1, 2)
+
+	fg := fgcolor("K")
+	fmt.Printf(esc("1", fg))
+
+	fmt.Printf(my_name)
+
+	my_addr := get_addr[my_node]
+
+	move_cursor(1, cols - len(my_addr))
+	fmt.Printf(my_addr)
+
+	move_cursor(HEADER_ROWS, 1)
+	fmt.Printf(RESET + esc(fg) + strings.Repeat("▂", cols))
+
+	fmt.Printf(RESET)
+
 }
 
 func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int, cal *Calendar, rows int, cols int) {
@@ -323,9 +341,8 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 	sidebar_col := 28 // col sidebar starts on
 	sidebar_width := cols - sidebar_col
 
-	hor_border := strings.Repeat("╌", sidebar_width - 2)
-	hor_space  := strings.Repeat(" ", sidebar_width - 2)
-	hor_fill   := strings.Repeat("▒", sidebar_width - 2)
+	hor_space  := strings.Repeat(" ", sidebar_width - 1)
+	hor_fill   := strings.Repeat("▒", sidebar_width - 1)
 
 	// height of infobox is larger of 12, rows/3
 	infobox_height := max(12, rows/3)
@@ -370,32 +387,29 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 	fmt.Printf(esc("1", bg, fg))
 
-	move_cursor(1, sidebar_col)
-	fmt.Printf("╓" + hor_border + "╌" + "\n")
-
-	for i := 2; i < infobox_height; i++ {
-		move_cursor(i, sidebar_col)
+	for i := 1; i < infobox_height; i++ {
+		move_cursor(HEADER_ROWS + i, sidebar_col)
 		fmt.Printf("║" + hor_space + "▒" + "\n")
 	}
 
-	move_cursor(infobox_height, sidebar_col)
+	move_cursor(HEADER_ROWS + infobox_height, sidebar_col)
 	fmt.Printf("║" + hor_fill + "▒" + "\n")
 
 
 	// infobox info 
-	move_cursor(2, sidebar_col + 3)
+	move_cursor(HEADER_ROWS + 2, sidebar_col + 3)
 	fmt.Printf(label)
 
-	move_cursor(4, sidebar_col + 5)
+	move_cursor(HEADER_ROWS + 4, sidebar_col + 5)
 	fmt.Printf(RESET + esc(bg, fg)) // turn off bold
 	fmt.Printf("time: %vh", time_str)
 
 	if state == "M" {
-		move_cursor(2, sidebar_col + 11)
+		move_cursor(HEADER_ROWS + 2, sidebar_col + 11)
 		fmt.Printf("\"%v\"", cal.Slots[*selected_slot].MeetingID)
 
 
-		move_cursor(5, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + 5, sidebar_col + 5)
 
 		proposer_id := cal.Slots[*selected_slot].ProposerID
 
@@ -404,12 +418,12 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		attendees := cal.Slots[*selected_slot].Attendees
 
 		row := 6
-		move_cursor(row, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + row, sidebar_col + 5)
 		fmt.Printf("attendees: %v", get_name[attendees[0]])
 
 		for i := 1; i < len(attendees); i++ {
 			row++
-			move_cursor(row, sidebar_col + 5)
+			move_cursor(HEADER_ROWS + row, sidebar_col + 5)
 			fmt.Printf("           %v", get_name[attendees[i]])
 		}
 
@@ -421,13 +435,13 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 
 	if *propose_ui {
-		move_cursor(infobox_height + 3, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 3, sidebar_col + 5)
 		fmt.Printf("q : quit meeting proposal")
 
-		move_cursor(infobox_height + 5, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 5, sidebar_col + 5)
 		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
 
-		move_cursor(infobox_height + 7, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 7, sidebar_col + 5)
 		fmt.Printf("toggle attendees:")
 
 		curr_row := infobox_height + 8
@@ -438,7 +452,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 				continue
 			}
 
-			move_cursor(curr_row, sidebar_col + 5)
+			move_cursor(HEADER_ROWS + curr_row, sidebar_col + 5)
 
 			if contains(my_proposal.Attendees, node) {
 				fmt.Printf(esc("1") + " ▸%v : %v", node, get_name[node] + RESET)
@@ -455,7 +469,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 	} else {
 
-		move_cursor(infobox_height + 3, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 3, sidebar_col + 5)
 
 		switch state {
 		case "A" :
@@ -463,15 +477,15 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		case "B" :
 			fmt.Printf("b : toggle available/busy")
 		case "M" :
-			fmt.Printf("b : set to busy")
+			fmt.Printf("b : set to busy           ")
 		default :
-			fmt.Printf("                         ")
+			fmt.Printf("                          ")
 		}
 
 		// if available
 		// press m to propose
 
-		move_cursor(infobox_height + 5, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 5, sidebar_col + 5)
 		switch state {
 		case "A" :
 			fmt.Printf("m : schedule a meeting                ")
@@ -481,7 +495,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 		// a bunch of empty space
 
-		move_cursor(infobox_height + 7, sidebar_col + 5)
+		move_cursor(HEADER_ROWS + infobox_height + 7, sidebar_col + 5)
 		fmt.Printf("                  ")
 
 		curr_row := infobox_height + 8
@@ -489,7 +503,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 
 		for node := 0; node < len(get_name); node++ {
 
-			move_cursor(curr_row, sidebar_col + 5)
+			move_cursor(HEADER_ROWS + curr_row, sidebar_col + 5)
 
 			fmt.Printf("                       ")
 			curr_row++
@@ -540,7 +554,7 @@ func scroller(draw_chan chan int, scroll_row *int, selected_slot *int, rows int,
 }
 
 func draw_slots(propose_ui *bool, my_proposal *UserPropose, scroll_row int, selected_slot int, cal Calendar, rows int) {
-	move_cursor(1, 1) // change for header
+	move_cursor(HEADER_ROWS + 1, 1) // change for header
 
 	// current slot
 	slot_i := scroll_row / 3
