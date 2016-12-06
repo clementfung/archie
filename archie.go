@@ -86,6 +86,11 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
   var timeslots []int
 
+  if (len(req.Attendees) == 0) {
+    fmt.Println("Can't have a meeting with nobody!")
+    return nil
+  }
+
   requestedTimeslots := make([]int, 0)
   for i := req.MinTime; i <= req.MaxTime; i++ {
     requestedTimeslots = append(requestedTimeslots, i)
@@ -1063,6 +1068,8 @@ func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
     fmt.Println("Updated Cache of " + t.AddressLookup[req.CacheOwner].Name)
   } else {
     fmt.Println("Illegal Cache Update detected...")
+    fmt.Println(req.CacheOwner)
+    fmt.Println(t.SelfID)
     os.Exit(1)
   }
 
@@ -1352,7 +1359,7 @@ func main() {
     status := heartbeatPhase(Logger, calendarHandler.AddressLookup, myNum)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myNum, address, numNodes, repFactor)
+      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
     }
 
   } else if (flag == "-j") {
@@ -1372,7 +1379,7 @@ func main() {
     myCalendar := initCalendar(myNum)
     for i := 0; i < repFactor; i++ {
       
-      nodeNum := (myNum + (numNodes - repFactor) + i) % numNodes
+      nodeNum := (myNum + numNodes - i) % numNodes
       fmt.Println(nodeNum)
       fmt.Println(addressLookup)
 
@@ -1422,7 +1429,7 @@ func main() {
     status := heartbeatPhase(Logger, calendarHandler.AddressLookup, myNum)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myNum, address, numNodes, repFactor)
+      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
     } 
   }
 
@@ -1431,7 +1438,7 @@ func main() {
   
 }
 
-func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Calendar, myNodeNum int, myAddress string, numNodes int, repFactor int) {
+func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Calendar, myCache map[int]Calendar, myNodeNum int, myAddress string, numNodes int, repFactor int) {
 
   updateToClient(*myCalendar, myAddress)
 
@@ -1473,6 +1480,37 @@ func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Cal
 
     }
 
+    // Check if the parent of you is dead (i.e you are middleman)
+    // Yes, this code only works because we have repFactor 2
+    parentID := (myNodeNum + numNodes - 1) % numNodes
+    passingID := (myNodeNum + 1) % numNodes
+    if (!(*addressLookup[parentID].IsActive) && *addressLookup[passingID].IsActive) {
+
+      fmt.Println("Parent handoff")
+
+      client, err := rpc.DialHTTP("tcp", addressLookup[passingID].Address)
+
+      if err != nil {
+        fmt.Println("Detected a failure on " + addressLookup[passingID].Name)
+        *addressLookup[passingID].IsActive = false
+        continue
+      }
+
+      args := CachePush{dinvRT.PackM(nil, "Sending CACHE to " + addressLookup[passingID].Address), parentID, myCache[parentID]}
+      reply := 0
+      err = client.Call("CalendarHandler.CachePush", args, &reply)
+
+      if err != nil {
+        fmt.Println("Detected a failure on " + addressLookup[passingID].Name)
+        *addressLookup[passingID].IsActive = false
+        continue
+      }
+
+      err = client.Close()
+      check(err)
+
+    }
+
   }
 
 }
@@ -1482,7 +1520,7 @@ func heartbeatPhase(Logger *govec.GoLog, addressLookup map[int]Peer, myID int) i
   allPeersFound := false
     
   for {
-    
+
     for _, peer := range addressLookup {
       
       time.Sleep(time.Duration(1000) * time.Millisecond)
@@ -1509,9 +1547,7 @@ func heartbeatPhase(Logger *govec.GoLog, addressLookup map[int]Peer, myID int) i
 
         err = client.Close()
         check(err)
-
       }
-
     }
 
     // Check if everyone is alive
