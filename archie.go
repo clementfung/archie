@@ -1377,7 +1377,7 @@ func main() {
     }    
 
     myCalendar := initCalendar(myNum)
-    for i := 0; i < repFactor; i++ {
+    for i := 1; i <= repFactor; i++ {
       
       nodeNum := (myNum + numNodes - i) % numNodes
       fmt.Println(nodeNum)
