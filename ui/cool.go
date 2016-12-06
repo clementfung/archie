@@ -30,6 +30,14 @@ type Booking struct {
   Alternates []int
 }
 
+// From the UI to the proposer
+type UserPropose struct {
+  MeetingID string
+  Attendees []int
+  MinTime int
+  MaxTime int
+}
+
 func main() {
 
 
@@ -97,12 +105,14 @@ func main() {
 
 
 
+	// meeting propose
 
-	meeting_ui := false
+	propose_ui := false
+	var my_proposal UserPropose
 
 
 	draw_chan := make(chan int)
-	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &rows, &cols)
+	go draw (draw_chan, &scroll_row, &selected_slot, &cal, &propose_ui, &my_proposal, &rows, &cols)
 	go scroller(draw_chan, &scroll_row, &selected_slot, rows, max_row)
 
 
@@ -117,21 +127,27 @@ func main() {
 		select {
 		case key := <- key_chan :
 
-			if meeting_ui {
+			state := cal.Slots[selected_slot].Status
+
+			if propose_ui {
 
 				switch key {
 				case "up" :
-					if selected_slot > 0 {
+					if selected_slot > my_proposal.MinTime {
 						selected_slot--
+						my_proposal.MaxTime--
 						draw_chan <- 1
 					}
 				case "down" :
 					if selected_slot < (len(cal.Slots) - 1) {
 						selected_slot++
+						my_proposal.MaxTime++
 						draw_chan <- 1
 					}
 
-				case "esc" : // begin propose
+				case "q" : // begin propose
+					propose_ui = false
+					draw_chan <- 1
 
 
 				}
@@ -152,8 +168,7 @@ func main() {
 					}
 
 
-				case "t" : // toggle "A"/"B"
-					state := cal.Slots[selected_slot].Status
+				case "t" : // toggle "A"/"B"					
 
 					if state == "A" || state == "B" {
 
@@ -161,7 +176,16 @@ func main() {
 				
 				case "m" : // begin propose
 
+					if state == "A" {
 
+						propose_ui = true
+						my_proposal = UserPropose{}
+						my_proposal.MinTime = selected_slot
+						my_proposal.MaxTime = selected_slot
+
+						draw_chan <- 1
+
+					}
 				}
 
 			}
@@ -172,19 +196,21 @@ func main() {
 }
 
 
-func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar, rows *int, cols *int) {
+func draw(draw_chan chan int, scroll_row *int, selected_slot *int, cal *Calendar, propose_ui *bool, my_proposal *UserPropose, rows *int, cols *int) {
 	for {
 		select {
 		case <- draw_chan :
-			draw_slots(*scroll_row, *selected_slot, *cal, *rows)
-			draw_sidebar(selected_slot, cal, *rows, *cols)
+			draw_slots(propose_ui, my_proposal, *scroll_row, *selected_slot, *cal, *rows)
+			draw_sidebar(propose_ui, my_proposal, selected_slot, cal, *rows, *cols)
+
+
 
 		}
 
 	}
 }
 
-func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
+func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int, cal *Calendar, rows int, cols int) {
 
 	// requires at least 30+ cols?
 
@@ -250,21 +276,6 @@ func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
 	move_cursor(infobox_height, sidebar_col)
 	fmt.Printf("║" + hor_fill + "▒" + "\n")
 
-/*
-	move_cursor(2, sidebar_col + 3)
-	fmt.Printf(" █████╗ ██╗   ██╗ █████╗ ██╗██╗      █████╗ ██████╗ ██╗     ███████╗")
-	move_cursor(3, sidebar_col + 3)
-	fmt.Printf("██╔══██╗██║   ██║██╔══██╗██║██║     ██╔══██╗██╔══██╗██║     ██╔════╝")
-	move_cursor(4, sidebar_col + 3)
-	fmt.Printf("███████║██║   ██║███████║██║██║     ███████║██████╔╝██║     █████╗  ")
-	move_cursor(5, sidebar_col + 3)
-	fmt.Printf("██╔══██║╚██╗ ██╔╝██╔══██║██║██║     ██╔══██║██╔══██╗██║     ██╔══╝  ")
-	move_cursor(6, sidebar_col + 3)
-	fmt.Printf("██║  ██║ ╚████╔╝ ██║  ██║██║███████╗██║  ██║██████╔╝███████╗███████╗")
-	move_cursor(7, sidebar_col + 3)
-	fmt.Printf("╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
-*/
-
 	move_cursor(2, sidebar_col + 3)
 	fmt.Printf(label)
 
@@ -275,26 +286,39 @@ func draw_sidebar(selected_slot *int, cal *Calendar, rows int, cols int) {
 	// if available/busy
 	// press t to toggle
 
-	move_cursor(infobox_height + 3, sidebar_col + 5)
+	if *propose_ui {
+		move_cursor(infobox_height + 3, sidebar_col + 5)
+		fmt.Printf("q : quit meeting proposal")
 
-	switch state {
-	case "A" :
-		fmt.Printf("t : toggle available/busy")
-	case "B" :
-		fmt.Printf("t : toggle available/busy")
-	default :
-		fmt.Printf("                         ")
-	}
+		move_cursor(infobox_height + 5, sidebar_col + 5)
+		fmt.Printf("enter : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
 
-	// if available
-	// press m to propose
 
-	move_cursor(infobox_height + 5, sidebar_col + 5)
-	switch state {
-	case "A" :
-		fmt.Printf("m : schedule a meeting")
-	default :
-		fmt.Printf("                      ")
+
+	} else {
+
+		move_cursor(infobox_height + 3, sidebar_col + 5)
+
+		switch state {
+		case "A" :
+			fmt.Printf("t : toggle available/busy")
+		case "B" :
+			fmt.Printf("t : toggle available/busy")
+		default :
+			fmt.Printf("                         ")
+		}
+
+		// if available
+		// press m to propose
+
+		move_cursor(infobox_height + 5, sidebar_col + 5)
+		switch state {
+		case "A" :
+			fmt.Printf("m : schedule a meeting                ")
+		default :
+			fmt.Printf("                                      ")
+		}
+
 	}
 
 	// 
@@ -344,7 +368,7 @@ func scroller(draw_chan chan int, scroll_row *int, selected_slot *int, rows int,
 
 }
 
-func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
+func draw_slots(propose_ui *bool, my_proposal *UserPropose, scroll_row int, selected_slot int, cal Calendar, rows int) {
 	move_cursor(1, 1) // change for header
 
 	// current slot
@@ -352,18 +376,20 @@ func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
 
 	remaining_rows := rows
 
+	min_slot := my_proposal.MinTime
+
 
 	// draw the cutoff first slot if needed
 	switch scroll_row % 3 {
 	case 1 :
 		// need to draw last two rows of first slot
-		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{1, 2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{1, 2}, true)
 		remaining_rows -= 2
 		slot_i++
 
 	case 2 :
 		// need to draw last row of first slot
-		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{2}, true)
 		remaining_rows -= 1
 		slot_i++
 	}
@@ -376,7 +402,7 @@ func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
 
 	// draw a bunch of full slots
 	for j := 0; j < max_slots - 1; j++ {
-		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1, 2}, true)
+		draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{0, 1, 2}, true)
 		remaining_rows -= 3
 		slot_i++
 	}
@@ -385,7 +411,7 @@ func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
 	//   if remaining_rows % 3 == 0
 	//   then this fits on to the last line, don't print a new line
 	//   if not, then print a new line
-	draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1, 2}, remaining_rows % 3 != 0)
+	draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{0, 1, 2}, remaining_rows % 3 != 0)
 	remaining_rows -= 3
 	slot_i++
 
@@ -397,11 +423,11 @@ func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
 		switch remaining_rows {
 		case 1 :
 			// can draw one row of last slot
-			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0}, false)
+			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{0}, false)
 
 		case 2 :
 			// can draw two rows of last slot
-			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot == slot_i, []int{0, 1}, false)
+			draw_slot(slot_i, cal.Slots[slot_i].Status, selected_slot, min_slot, *propose_ui, []int{0, 1}, false)
 
 		}
 	}
@@ -409,7 +435,7 @@ func draw_slots(scroll_row int, selected_slot int, cal Calendar, rows int) {
 
 }
 
-func draw_slot(time int, state string, selected bool, visible_rows []int, new_line bool) {
+func draw_slot(time int, state string, selected_slot int, min_slot int, propose_ui bool, visible_rows []int, new_line bool) {
 
 	var label string
 	var time_str string
@@ -446,28 +472,48 @@ func draw_slot(time int, state string, selected bool, visible_rows []int, new_li
 
 	}
 
-	if selected {
+	if propose_ui {
+		if min_slot <= time && time <= selected_slot {
+			fg = fgcolor("Y")
+
+			if state == "A" { // also colour bg if it's available
+				bg = bgcolor("Y")
+			}
+		}
+	} else if time == selected_slot {
 		fg = fgcolor("W")
 	}
 
 	for i, row := range visible_rows {
 		if i < len(visible_rows) - 1 {
-			draw_slot_row(row, fg, bg, time_str, label, selected, true)
+			draw_slot_row(row, fg, bg, time_str, label, time == selected_slot, time == min_slot, propose_ui, true)
 		} else {
-			draw_slot_row(row, fg, bg, time_str, label, selected, new_line)
+			draw_slot_row(row, fg, bg, time_str, label, time == selected_slot, time == min_slot, propose_ui, new_line)
 		}
 
 	}
 }
 
-func draw_slot_row(row int, fg string, bg string, time_str string, label string, selected bool, new_line bool) {
+func draw_slot_row(row int, fg string, bg string, time_str string, label string, selected bool, is_min bool, propose_ui bool, new_line bool) {
 	
 	if selected {
 		switch row {
 		case 0 :
 			fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────┒" + RESET + "  ")
 		case 1 :
-			fmt.Printf("  " + esc("1") + time_str + " ▶" + esc(fg, bg) + "│  " + label + "┃" + RESET + "◀")
+
+			if propose_ui {
+				if is_min {
+					fmt.Printf("  " + esc("1") + time_str + esc(fg) + " ▶" + esc(bg) + "│  " + label + "┃" + RESET + esc("1", fg) + "◀" + RESET)
+				} else {
+					fmt.Printf("  " + esc("1") + time_str + "  " + esc(fg, bg) + "│  " + label + "┃" + RESET + esc("1", fg) + "◀" + RESET)
+				}	
+
+			} else {
+				fmt.Printf("  " + esc("1") + time_str + " ▶" + esc(fg, bg) + "│  " + label + "┃" + RESET + "◀")
+			}
+
+
 		case 2 :
 			fmt.Printf("      " + esc("1", fg, bg) + "┕━━━━━━━━━━━━━┛" + RESET + "  ")
 		}
@@ -477,7 +523,14 @@ func draw_slot_row(row int, fg string, bg string, time_str string, label string,
 		case 0 :
 			fmt.Printf("      " + esc("1", fg, bg) + "╭─────────────╮" + RESET + "  ")
 		case 1 :
-			fmt.Printf("  " + time_str + "  " + esc("1", fg, bg) + "│  " + label + "│" + RESET + "  ")
+			
+			if propose_ui && is_min {
+				fmt.Printf("  " + time_str + esc(fg) + " ▶" + esc("1", bg) + "│  " + label + "│" + RESET + "  ")
+			} else {
+				fmt.Printf("  " + time_str + "  " + esc("1", fg, bg) + "│  " + label + "│" + RESET + "  ")
+			}
+
+
 		case 2 :
 			fmt.Printf("      " + esc("1", fg, bg) + "╰─────────────╯" + RESET + "  ")
 		}
@@ -593,27 +646,33 @@ func handle_keys(key_chan chan string) {
                 switch b[0] {
                 case 65 :
                     key_chan <- "up"
+                    continue
                 case 66 :
                     key_chan <- "down"
+                    continue
                 case 67 :
                     key_chan <- "right"
+                    continue
                 case 68 :
                     key_chan <- "left"
+                    continue
                 }
                 
             }
         }
 
-        if (b[0] >= 65 && b[0] <= 90) || (b[0] >= 97 && b[0] <= 122) {
 
-        key := string(b[0])
 
-        if key == "t" || key == "T" {
-        	key_chan <- "t"
-        } else key == "m" || key == "M" {
-        	key_chan <- "m"
+        if b[0] >= 65 && b[0] <= 90 {
+        	key := string(b[0] + 32)
+        	key_chan <- key
+        	continue
         }
 
+    	if b[0] >= 97 && b[0] <= 122 {
+        	key := string(b[0])
+        	key_chan <- key
+    		continue
     	}
 
     }

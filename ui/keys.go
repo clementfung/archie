@@ -25,15 +25,31 @@ func main() {
                 switch b[0] {
                 case 65 :
                     fmt.Println("up")
+                    continue
                 case 66 :
                     fmt.Println("down")
+                    continue
                 case 67 :
                     fmt.Println("right")
+                    continue
                 case 68 :
                     fmt.Println("left")
+                    continue
                 }
                 
             }
+        }
+
+        if b[0] >= 65 && b[0] <= 90 {
+            key := string(b[0] + 32)
+            fmt.Println(key)
+            continue
+        }
+
+        if b[0] >= 97 && b[0] <= 122 {
+            key := string(b[0])
+            fmt.Println(key)
+            continue
         }
 
     }
