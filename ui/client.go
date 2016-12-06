@@ -61,8 +61,13 @@ func main() {
 
 	// init
 
-    my_node, err := strconv.Atoi(os.Args[1])
+	var err error
+
+    my_node, err = strconv.Atoi(os.Args[1])
     handle_err(err)
+
+    //my_node = my_node_
+
     peersfile := os.Args[2]
 
     read_peers(peersfile)
@@ -423,7 +428,7 @@ func draw_sidebar(propose_ui *bool, my_proposal *UserPropose, selected_slot *int
 		fmt.Printf("b : book meeting between %v and %v   ", my_proposal.MinTime, my_proposal.MaxTime)
 
 		move_cursor(infobox_height + 7, sidebar_col + 5)
-		fmt.Printf("toggle attendees")
+		fmt.Printf("toggle attendees:")
 
 		curr_row := infobox_height + 8
 
