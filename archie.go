@@ -1343,7 +1343,7 @@ func main() {
 
     myCache := make(map[int]Calendar)
     for i := 1; i <= repFactor; i++ {
-      myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
+      myCache[(myNum + numNodes - i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }
 
     calendarHandler := CalendarHandler{Logger, myNum, address, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
@@ -1372,13 +1372,13 @@ func main() {
 
     myCache := make(map[int]Calendar)
     for i := 1; i <= repFactor; i++ {
-      myCache[(myNum + i) % numNodes] = initCalendar((myNum + i) % numNodes)  
+      myCache[(myNum + numNodes - i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }    
 
     myCalendar := initCalendar(myNum)
     for i := 1; i <= repFactor; i++ {
       
-      nodeNum := (myNum + numNodes - i) % numNodes
+      nodeNum := (myNum + i) % numNodes
       fmt.Println(nodeNum)
       fmt.Println(addressLookup)
 
