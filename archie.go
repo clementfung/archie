@@ -11,7 +11,6 @@ import (
   "strings"
   "bufio"
   "errors"
-  "github.com/arcaneiceman/GoVector/govec"
   "bitbucket.org/bestchai/dinv/dinvRT"
 )
 
@@ -21,7 +20,6 @@ import (
   Clement Fung
   Amon Ge
 */
-
 type Peer struct {
   Name string
   Address string
@@ -33,20 +31,21 @@ type Heartbeat struct {
   SourceID int
 }
 
+// Used for waking up and re-entering the system
 func (t* CalendarHandler) Beat(req Heartbeat, reply *int) error {
+  dinvRT.UnpackM(req.Buffer, nil, "Got BEAT from " + t.AddressLookup[req.SourceID].Name)
   fmt.Println(t.AddressLookup[req.SourceID].Name + " is active!")
   *t.AddressLookup[req.SourceID].IsActive = true
   *reply = 1
   return nil
 }
 
-/* A handler for calendars */
+/* A handler for all calendar related messages */
 type CalendarHandler struct {
-  Logger *govec.GoLog
   SelfID int
   Address string
   AddressLookup map[int]Peer
-  MyMeetings []Meeting
+  MyMeetings []Meeting // stores my in-progress meetings
   MyCalendar Calendar
   MyCache map[int]Calendar
   NumNodes int
@@ -91,162 +90,157 @@ func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
     return nil
   }
 
+  theMeeting := initMeeting()
+  for _, meeting := range t.MyMeetings {
+    if meeting.MeetingID == req.MeetingID {
+      fmt.Println("You are already trying a meeting with this ID: " + req.MeetingID)
+      return errors.New("Already attempting meetingID " + req.MeetingID)
+    }
+  }
+
+  for _, attendeeID := range req.Attendees {
+    _, contains := t.AddressLookup[attendeeID]
+    if !contains {
+      fmt.Println("Got an illegal proposal. Node " + strconv.Itoa(attendeeID) + " does not exist.")
+      return nil
+    }
+  }
+
   requestedTimeslots := make([]int, 0)
   for i := req.MinTime; i <= req.MaxTime; i++ {
     requestedTimeslots = append(requestedTimeslots, i)
   }
 
-  theMeeting := initMeeting()
-  for _, meeting := range t.MyMeetings {
-    if meeting.MeetingID == req.MeetingID {
-      theMeeting.MeetingID = "Taken"
+  attendeeIDs := req.Attendees
+  numRepliesNeeded := len(attendeeIDs)
+  theMeeting = Meeting{req.MeetingID, &numRepliesNeeded, attendeeIDs, requestedTimeslots, make(map[int][]int)} 
+  t.MyMeetings = append(t.MyMeetings, theMeeting)
+
+  for _, time := range requestedTimeslots {
+    if t.MyCalendar.Slots[time].Status == "A" {
+      fmt.Println("At time " + strconv.Itoa(time) + " try it.")
+      t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, attendeeIDs, requestedTimeslots}
+      timeslots = append(timeslots, time)
     }
   }
 
-  if theMeeting.MeetingID != "Taken" {
+  for _, attendeeID := range attendeeIDs {
 
-    for _, attendeeID := range req.Attendees {
-      _, contains := t.AddressLookup[attendeeID]
-      if !contains {
-        fmt.Println("Got an illegal proposal. Node " + strconv.Itoa(attendeeID) + " does not exist.")
-        return nil
-      }
-    }
+    fmt.Println("Trying to find: " + strconv.Itoa(attendeeID))
 
-    attendeeIDs := req.Attendees
-    numRepliesNeeded := len(attendeeIDs)
-    theMeeting = Meeting{req.MeetingID, &numRepliesNeeded, attendeeIDs, requestedTimeslots, make(map[int][]int)} 
-    t.MyMeetings = append(t.MyMeetings, theMeeting)
+    // in the request, let the callee know its a cache call
+    sent := false
+    isProxy := false
 
-    for _, time := range requestedTimeslots {
-      if t.MyCalendar.Slots[time].Status == "A" {
-        fmt.Println("At time " + strconv.Itoa(time) + " try it.")
-        t.MyCalendar.Slots[time] = Booking{"R", req.MeetingID, t.SelfID, attendeeIDs, requestedTimeslots}
-        timeslots = append(timeslots, time)
-      }
-    }
+    for i := 0; i <= t.RepFactor; i++ {
+      
+      contactID := (attendeeID + i) % t.NumNodes
 
-    for _, attendeeID := range attendeeIDs {
+      // Trying to find replicas, but you are actually the cache holder. 
+      // Have to do everything locally
+      if (contactID == t.SelfID) {
 
-      sent := false
-      isProxy := false
-      fmt.Println("Trying to find: " + strconv.Itoa(attendeeID))
+        requestedBooking := Booking{"R", theMeeting.MeetingID, t.SelfID, attendeeIDs, requestedTimeslots}
+        timeslots = blockOff(t.MyCache[attendeeID].Slots, requestedBooking, requestedTimeslots)
+        fmt.Println(timeslots)
 
-      for i := 0; i <= t.RepFactor; i++ {
-        
-        contactID := (attendeeID + i) % t.NumNodes
-
-        if (contactID == t.SelfID) {
-
-          requestedBooking := Booking{"R", theMeeting.MeetingID, t.SelfID, attendeeIDs, requestedTimeslots}
-          timeslots = blockOff(t.MyCache[attendeeID].Slots, requestedBooking, requestedTimeslots)
-          fmt.Println(timeslots)
-
-          meetingIdx := -1
-          for idx, myMeeting := range t.MyMeetings {
-            if (myMeeting.MeetingID == req.MeetingID) {
-              t.MyMeetings[idx].TimeSlotsMap[attendeeID] = timeslots
-              meetingIdx = idx
-              *t.MyMeetings[idx].NumRepliesNeeded = *t.MyMeetings[idx].NumRepliesNeeded - 1
-              fmt.Println("Proxy: I still need... " + strconv.Itoa(*t.MyMeetings[idx].NumRepliesNeeded))
-              break
-            }
+        meetingIdx := -1
+        for idx, myMeeting := range t.MyMeetings {
+          if (myMeeting.MeetingID == req.MeetingID) {
+            t.MyMeetings[idx].TimeSlotsMap[attendeeID] = timeslots
+            meetingIdx = idx
+            *t.MyMeetings[idx].NumRepliesNeeded = *t.MyMeetings[idx].NumRepliesNeeded - 1
+            fmt.Println("In proxy: I still need " + strconv.Itoa(*t.MyMeetings[idx].NumRepliesNeeded) + " replies.")
+            break
           }
-
-          if (meetingIdx == -1) {
-            fmt.Println("This isn't my meeting?")
-            os.Exit(1)
-          }
-
-          sent = true
-          fmt.Println(t.MyMeetings)
-          myMeeting := t.MyMeetings[meetingIdx]
-
-          if (*myMeeting.NumRepliesNeeded == 0) {
-
-            bestTime := selectAndInform(myMeeting, t.MyCache, t.SelfID, t.AddressLookup, t.RepFactor, t.NumNodes)
-
-            fmt.Println(myMeeting)
-            for _, time := range myMeeting.RequestedTimeSlots {
-              
-              booking := t.MyCalendar.Slots[time]
-
-              if booking.MeetingID == myMeeting.MeetingID {
-
-                if (booking.Status == "R") { 
-                  if time == bestTime {
-                    t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
-                  } else {
-                    t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
-                  } 
-                }
-              }
-
-            }
-
-            t.MyMeetings[meetingIdx] = t.MyMeetings[len(t.MyMeetings)-1]
-            t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
-            fmt.Println(t.MyCalendar)
-            fmt.Println(t.MyMeetings)
-
-          }
-
-          break
-
-        } else {
-
-          fmt.Println("Attempting to contact " + t.AddressLookup[contactID].Address)
-          if (*t.AddressLookup[contactID].IsActive) {        
-            
-            client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
-
-            if err != nil {
-              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-              *t.AddressLookup[contactID].IsActive = false
-              isProxy = true
-              continue
-            }
-
-            fmt.Println("Sending PROPOSE to " + t.AddressLookup[contactID].Name)
-            args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
-                theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
-
-            subreply := 0
-            err = client.Call("CalendarHandler.Propose", args, &subreply)
-            
-            if err != nil {
-              fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
-              *t.AddressLookup[contactID].IsActive = false
-              isProxy = true
-              continue
-            }
-
-            err = client.Close()
-            check(err)
-            sent = true  
-            
-            break  
-
-          } else {
-            fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
-            isProxy = true
-          }   
         }
 
-      }
+        if (meetingIdx == -1) {
+          fmt.Println("This isn't my meeting?")
+          os.Exit(1)
+        }
 
-      if (!sent) {
-        fmt.Println("Not enough replicas alive!")
-        os.Exit(1)
+        sent = true
+        myMeeting := t.MyMeetings[meetingIdx]
+
+        // Once all replies received, do the SELECT
+        if (*myMeeting.NumRepliesNeeded == 0) {
+
+          bestTime := selectAndInform(myMeeting, t.MyCache, t.SelfID, t.AddressLookup, t.RepFactor, t.NumNodes)
+          
+          for _, time := range myMeeting.RequestedTimeSlots {
+            booking := t.MyCalendar.Slots[time]
+            if booking.MeetingID == myMeeting.MeetingID {
+              if (booking.Status == "R") { 
+                if time == bestTime {
+                  t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
+                } else {
+                  t.MyCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+                } 
+              }
+            }
+          }
+
+          // Delete the meeting now that it has completed
+          t.MyMeetings[meetingIdx] = t.MyMeetings[len(t.MyMeetings)-1]
+          t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
+          fmt.Println(t.MyCalendar)
+          fmt.Println(t.MyMeetings)
+
+        }
+
+        break
+
+      } else {
+
+        fmt.Println("Attempting to contact " + t.AddressLookup[contactID].Address)
+        if (*t.AddressLookup[contactID].IsActive) {        
+          
+          client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
+
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            isProxy = true
+            continue
+          }
+
+          fmt.Println("Sending PROPOSE to " + t.AddressLookup[contactID].Name)
+          args := Propose{dinvRT.PackM(nil, "Sending PROPOSE to " + t.AddressLookup[contactID].Name), 
+              theMeeting.MeetingID, t.SelfID, attendeeIDs, timeslots, attendeeID, isProxy}
+
+          subreply := 0
+          err = client.Call("CalendarHandler.Propose", args, &subreply)
+          
+          if err != nil {
+            fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
+            *t.AddressLookup[contactID].IsActive = false
+            isProxy = true
+            continue
+          }
+
+          err = client.Close()
+          check(err)
+          sent = true  
+          
+          break  
+
+        } else {
+          fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
+          isProxy = true
+        }   
       }
 
     }
 
-  } else {
-    fmt.Println("You are already trying a meeting, fool.")
-    return errors.New("Already attempting meetingID " + req.MeetingID)
+    if (!sent) {
+      fmt.Println("Not enough replicas alive!")
+      os.Exit(1)
+    }
+
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
@@ -266,12 +260,13 @@ type Propose struct {
 
 func (t* CalendarHandler) Propose(req Propose, reply *int) error {
 
-  fmt.Println(t.AddressLookup[req.ProposerID].Name + ", I accept you!")
+  fmt.Println("Got PROPOSE from " + t.AddressLookup[req.ProposerID].Name)
   dinvRT.UnpackM(req.Buffer, nil, "Got PROPOSE from " + t.AddressLookup[req.ProposerID].Name)
 
   var timeslots []int
   requestedBooking := Booking{"R", req.MeetingID, req.ProposerID, req.Attendees, req.TimeSlots}
 
+  // Is it for me, or my cache?
   if (req.IsProxy) {
 
     _, contains := t.MyCache[req.AcceptorID]
@@ -282,6 +277,9 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     }
 
   } else {
+    // testing
+    //fmt.Println("Kill me NOW!")
+    //time.Sleep(time.Duration(5000) * time.Millisecond)
     timeslots = blockOff(t.MyCalendar.Slots, requestedBooking, req.TimeSlots)
   }
 
@@ -303,7 +301,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
         continue
       }
 
-      // Used to let the proposer know who's preferences these are
+      // Used to let the proposer know who's RESERVE this is
       sendingID := t.SelfID
       if (req.IsProxy) {
         sendingID = req.AcceptorID
@@ -338,6 +336,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     os.Exit(1)
   }
   
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
@@ -358,6 +357,7 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
   fmt.Println("Got RESERVE from " + t.AddressLookup[req.AcceptorID].Name)
   dinvRT.UnpackM(req.Buffer, nil, "Got RESERVE from " + t.AddressLookup[req.AcceptorID].Name)
 
+  // Collect RESERVE responses in meeting map
   meetingIdx := -1
   for i, myMeeting := range t.MyMeetings {
     if (myMeeting.MeetingID == req.MeetingID) {
@@ -375,8 +375,9 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
   }
 
   myMeeting := t.MyMeetings[meetingIdx] 
-  fmt.Println("I am looking for... " + strconv.Itoa(*myMeeting.NumRepliesNeeded))
-  
+  fmt.Println("I am looking for " + strconv.Itoa(*myMeeting.NumRepliesNeeded) + " more replies.")
+
+  // Got all replies, arrange the meeting  
   if (*myMeeting.NumRepliesNeeded == 0) {   
     
     fmt.Println(t.MyMeetings)
@@ -388,7 +389,6 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
       booking := t.MyCalendar.Slots[time]
 
       if booking.MeetingID == myMeeting.MeetingID {
-
         if (booking.Status == "R") { 
           if time == bestTime {
             t.MyCalendar.Slots[time] = Booking{"M", booking.MeetingID, booking.ProposerID, booking.Attendees, booking.Alternates}
@@ -397,19 +397,26 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
           } 
         }
       }
-
     }
 
     t.MyMeetings[meetingIdx] = t.MyMeetings[len(t.MyMeetings)-1]
     t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
-    fmt.Println(t.MyCalendar)
-    fmt.Println(t.MyMeetings)
+    pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
     updateToClient(t.MyCalendar, t.Address)
 
   }
 
   *reply = 1
   return nil
+}
+
+func clearMeeting(myCalendar *Calendar, meetingID string) {
+
+  for time, booking := range myCalendar.Slots {
+    if booking.MeetingID == meetingID && booking.Status == "R" {
+      myCalendar.Slots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)} 
+    }
+  }
 
 }
 
@@ -460,6 +467,7 @@ func (t* CalendarHandler) Select(req Select, reply *int) error {
     }
   } 
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   fmt.Println(t.MyCalendar)
   updateToClient(t.MyCalendar, t.Address)
 
@@ -476,6 +484,7 @@ func (t* CalendarHandler) UserAvailable(time int, reply *int) error {
     *reply = 0
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   updateToClient(t.MyCalendar, t.Address)
   return nil
 
@@ -621,6 +630,7 @@ func (t* CalendarHandler) UserBusy(time int, reply *int) error {
     }
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   fmt.Println(t.MyCalendar.Slots) 
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
@@ -806,6 +816,7 @@ func (t* CalendarHandler) RequestReschedule(req Reschedule, reply *int) error {
   
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
@@ -918,6 +929,7 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
     os.Exit(1)
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
   return nil
@@ -1015,6 +1027,7 @@ func (t* CalendarHandler) UserCancel(time int, reply *int) error {
 
   }
 
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   fmt.Println(t.MyCalendar.Slots)
   updateToClient(t.MyCalendar, t.Address)
   *reply = 1
@@ -1044,6 +1057,7 @@ func (t* CalendarHandler) Cancel(req Cancel, reply *int) error {
     }
   }
   
+  pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
   fmt.Println(t.MyCalendar.Slots)
   updateToClient(t.MyCalendar, t.Address)
   return nil
@@ -1073,7 +1087,6 @@ func (t* CalendarHandler) CachePush(req CachePush, reply *int) error {
     os.Exit(1)
   }
 
-  fmt.Println(t.MyCache)
   *reply = 1
   return nil
 }
@@ -1306,7 +1319,6 @@ func main() {
   fmt.Println("Address: " + address)
   fmt.Println("Peersfile: " + peersfile)
 
-  Logger := govec.Initialize("Master " + address, "log.txt")
   dinvRT.GetLogger().LogLocalEvent("Starting...")
 
   addressLookup := make(map[int]Peer)
@@ -1346,7 +1358,7 @@ func main() {
       myCache[(myNum + numNodes - i) % numNodes] = initCalendar((myNum + i) % numNodes)  
     }
 
-    calendarHandler := CalendarHandler{Logger, myNum, address, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
+    calendarHandler := CalendarHandler{myNum, address, addressLookup, make([]Meeting, 0), initCalendar(myNum), myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     // Export the RPC functions
@@ -1355,10 +1367,10 @@ func main() {
     check(err)
     go http.Serve(listener, nil)
 
-    status := heartbeatPhase(Logger, calendarHandler.AddressLookup, myNum)
+    status := heartbeatPhase(calendarHandler.AddressLookup, myNum)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
+      archieMain(addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
     }
 
   } else if (flag == "-j") {
@@ -1414,7 +1426,7 @@ func main() {
       *addressLookup[i].IsActive = false
     }
 
-    calendarHandler := CalendarHandler{Logger, myNum, address, addressLookup, make([]Meeting, 0), myCalendar, myCache, numNodes, repFactor}
+    calendarHandler := CalendarHandler{myNum, address, addressLookup, make([]Meeting, 0), myCalendar, myCache, numNodes, repFactor}
     rpc.Register(&calendarHandler)
 
     fmt.Println(calendarHandler.MyCalendar)
@@ -1425,10 +1437,10 @@ func main() {
     check(err)
     go http.Serve(listener, nil)
     
-    status := heartbeatPhase(Logger, calendarHandler.AddressLookup, myNum)
+    status := heartbeatPhase(calendarHandler.AddressLookup, myNum)
     if status == 1 {
       fmt.Println("Ready to start Archie!")
-      archieMain(Logger, addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
+      archieMain(addressLookup, &calendarHandler.MyCalendar, myCache, myNum, address, numNodes, repFactor)
     } 
   }
 
@@ -1437,47 +1449,13 @@ func main() {
   
 }
 
-func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Calendar, myCache map[int]Calendar, myNodeNum int, myAddress string, numNodes int, repFactor int) {
-
-  updateToClient(*myCalendar, myAddress)
+func archieMain(addressLookup map[int]Peer, myCalendar *Calendar, myCache map[int]Calendar, myNodeNum int, myAddress string, numNodes int, repFactor int) {
 
   for {
 
     time.Sleep(time.Duration(5000) * time.Millisecond)
-    for i := 1; i <= repFactor; i++ {
-      
-      nodeNum := (myNodeNum + i) % numNodes
-      fmt.Println(nodeNum)
-      fmt.Println(addressLookup)
-
-      if (*addressLookup[nodeNum].IsActive) {
-
-        client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
-
-        if err != nil {
-          fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
-          *addressLookup[nodeNum].IsActive = false
-          continue
-        }
-
-        args := CachePush{dinvRT.PackM(nil, "Sending CACHE to " + addressLookup[nodeNum].Address), myNodeNum, *myCalendar}
-        reply := 0
-        err = client.Call("CalendarHandler.CachePush", args, &reply)
-
-        if err != nil {
-          fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
-          *addressLookup[nodeNum].IsActive = false
-          continue
-        }
-
-        err = client.Close()
-        check(err)
-
-      } else {
-        fmt.Println(addressLookup[nodeNum].Name + " is inactive. Skipping...")
-      }
-
-    }
+    updateToClient(*myCalendar, myAddress)
+    pushMyCache(addressLookup, myCalendar, myNodeNum, myAddress, numNodes, repFactor)
 
     // Check if the parent of you is dead (i.e you are middleman)
     // Yes, this code only works because we have repFactor 2
@@ -1514,7 +1492,44 @@ func archieMain(Logger *govec.GoLog, addressLookup map[int]Peer, myCalendar *Cal
 
 }
 
-func heartbeatPhase(Logger *govec.GoLog, addressLookup map[int]Peer, myID int) int {
+func pushMyCache(addressLookup map[int]Peer, myCalendar *Calendar, myNodeNum int, myAddress string, numNodes int, repFactor int) {
+
+  for i := 1; i <= repFactor; i++ {
+  
+  nodeNum := (myNodeNum + i) % numNodes
+
+  if (*addressLookup[nodeNum].IsActive) {
+
+    client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
+
+    if err != nil {
+      fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+      *addressLookup[nodeNum].IsActive = false
+      continue
+    }
+
+    args := CachePush{dinvRT.PackM(nil, "Sending CACHE to " + addressLookup[nodeNum].Address), myNodeNum, *myCalendar}
+    reply := 0
+    err = client.Call("CalendarHandler.CachePush", args, &reply)
+
+    if err != nil {
+      fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+      *addressLookup[nodeNum].IsActive = false
+      continue
+    }
+
+    err = client.Close()
+    check(err)
+
+  } else {
+    fmt.Println(addressLookup[nodeNum].Name + " is inactive. Skipping...")
+  }
+
+}
+
+}
+
+func heartbeatPhase(addressLookup map[int]Peer, myID int) int {
 
   allPeersFound := false
     
@@ -1535,7 +1550,7 @@ func heartbeatPhase(Logger *govec.GoLog, addressLookup map[int]Peer, myID int) i
           continue
         }
 
-        args := Heartbeat{dinvRT.PackM(nil, "Beating to " + peer.Address), myID}
+        args := Heartbeat{dinvRT.PackM(nil, "Send BEAT to " + peer.Address), myID}
         reply := 0
         err = client.Call("CalendarHandler.Beat", args, &reply)
         check(err)
