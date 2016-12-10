@@ -405,8 +405,6 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
     pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
     updateToClient(t.MyCalendar, t.Address)
     endTime = time.Now().Unix()
-    fmt.Println(startTime)
-    fmt.Println(endTime)
     totalTime := endTime - startTime
     fmt.Println("Meeting took: " + strconv.FormatInt(totalTime, 10) + " ms.")
 
@@ -1466,6 +1464,43 @@ func archieMain(addressLookup map[int]Peer, myCalendar *Calendar, myCache map[in
   for {
 
     time.Sleep(time.Duration(5000) * time.Millisecond)
+
+    // Clean up unresolved meetings for which the proposer is dead
+    for _, booking := range myCalendar.Slots {
+      
+      if booking.Status == "R" && booking.ProposerID != myNodeNum {
+
+        if (*addressLookup[booking.ProposerID].IsActive) {
+
+          client, err := rpc.DialHTTP("tcp", addressLookup[booking.ProposerID].Address)
+          if err != nil {
+            *addressLookup[booking.ProposerID].IsActive = false
+            continue
+          }
+
+          args := Heartbeat{dinvRT.PackM(nil, "Checking liveness on " + addressLookup[booking.ProposerID].Name), myNodeNum}
+          reply := 0
+          err = client.Call("CalendarHandler.Beat", args, &reply)
+          if err != nil {
+            *addressLookup[booking.ProposerID].IsActive = false
+            continue
+          }          
+
+          err = client.Close()
+          check(err)
+
+        } 
+
+        // Proposer is not alive, but stale reservations exist
+        if (!*addressLookup[booking.ProposerID].IsActive) {
+          fmt.Println("Found stale meetings.")
+          revertMeeting(myCalendar.Slots, booking.MeetingID)
+        }
+
+      }
+
+    }
+
     updateToClient(*myCalendar, myAddress)
     pushMyCache(addressLookup, myCalendar, myNodeNum, myAddress, numNodes, repFactor)
 
