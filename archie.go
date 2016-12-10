@@ -14,6 +14,9 @@ import (
   "bitbucket.org/bestchai/dinv/dinvRT"
 )
 
+var startTime int64
+var endTime int64
+
 /*
   ARCHIE
   by
@@ -84,6 +87,8 @@ type UserPropose struct {
 func (t* CalendarHandler) UserPropose(req UserPropose, reply *int) error {
 
   var timeslots []int
+
+  startTime = time.Now().Unix()
 
   if (len(req.Attendees) == 0) {
     fmt.Println("Can't have a meeting with nobody!")
@@ -283,12 +288,16 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
     timeslots = blockOff(t.MyCalendar.Slots, requestedBooking, req.TimeSlots)
   }
 
-  sent := false
-  isProxy := false
+  isFailed := false
 
   for i := 0; i <= t.RepFactor; i++ {
 
-    contactID := (req.ProposerID + i) % t.NumNodes
+    if (isFailed) {
+      revertMeeting(t.MyCalendar.Slots, req.MeetingID)
+      break
+    }
+
+    contactID := (req.ProposerID)
       
     if (*t.AddressLookup[contactID].IsActive) {        
       
@@ -297,7 +306,7 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
-        isProxy = true
+        isFailed = true
         continue
       }
 
@@ -307,33 +316,26 @@ func (t* CalendarHandler) Propose(req Propose, reply *int) error {
         sendingID = req.AcceptorID
       }
 
-      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots, isProxy}
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots}
       subreply := 0
       err = client.Call("CalendarHandler.Reserve", args, &subreply)
       
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
-        isProxy = true
+        isFailed = true
         continue
       }
 
       err = client.Close()
       check(err)  
-
-      sent = true  
       break  
 
     } else {
       fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
-      isProxy = true
+      isFailed = true
     }
     
-  }
-
-  if (!sent) {
-    fmt.Println("Not enough replicas alive!")
-    os.Exit(1)
   }
   
   pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
@@ -349,7 +351,6 @@ type Reserve struct {
   MeetingID string
   AcceptorID int
   TimeSlots []int
-  IsProxy bool
 }
 
 func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
@@ -403,6 +404,11 @@ func (t* CalendarHandler) Reserve(req Reserve, reply *int) error {
     t.MyMeetings = t.MyMeetings[:len(t.MyMeetings)-1]
     pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
     updateToClient(t.MyCalendar, t.Address)
+    endTime = time.Now().Unix()
+    fmt.Println(startTime)
+    fmt.Println(endTime)
+    totalTime := endTime - startTime
+    fmt.Println("Meeting took: " + strconv.FormatInt(totalTime, 10) + " ms.")
 
   }
 
@@ -876,21 +882,25 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
     }
   }
 
-  sent := false
-  isProxy := false
+  isFailed := false
 
   for i := 0; i <= t.RepFactor; i++ {
 
-    contactID := (req.ProposerID + i) % t.NumNodes
+    if (isFailed) {
+      revertMeeting(t.MyCalendar.Slots, req.MeetingID)
+      break
+    }
 
-    if (*t.AddressLookup[contactID].IsActive) {        
+    contactID := req.ProposerID
+
+    if (*t.AddressLookup[contactID].IsActive) {
 
       client, err := rpc.DialHTTP("tcp", t.AddressLookup[contactID].Address)
 
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
-        isProxy = true
+        isFailed = true
         continue
       }
 
@@ -900,33 +910,26 @@ func (t* CalendarHandler) Reschedule(req Reschedule, reply *int) error {
         sendingID = req.AcceptorID
       }
 
-      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots, isProxy}
+      args := Reserve{dinvRT.PackM(nil, "Sending RESERVE to " + t.AddressLookup[contactID].Name), req.MeetingID, sendingID, timeslots}
       subreply := 0
       err = client.Call("CalendarHandler.Reserve", args, &subreply)
 
       if err != nil {
         fmt.Println("Detected a failure on " + t.AddressLookup[contactID].Name + " fallback to next person")
         *t.AddressLookup[contactID].IsActive = false
-        isProxy = true
+        isFailed = true
         continue
       }
 
       err = client.Close()
       check(err) 
-
-      sent = true
       break
 
     } else {
       fmt.Println(t.AddressLookup[contactID].Name + " is logged as inactive.")
-      isProxy = true
+      isFailed = true
     }
     
-  }
-
-  if (!sent) {
-    fmt.Println("Not enough replicas alive!")
-    os.Exit(1)
   }
 
   pushMyCache(t.AddressLookup, &t.MyCalendar, t.SelfID, t.Address, t.NumNodes, t.RepFactor)
@@ -1214,6 +1217,15 @@ func selectAndInform(myMeeting Meeting, myCache map[int]Calendar, myID int, addr
 }
 
 /* UTILITY FUNCTIONS */
+func revertMeeting(timeslots map[int]Booking, meetingID string) {
+  fmt.Println("MUST REVERT THE MEETING")
+  for time, booking := range timeslots {
+    if booking.MeetingID == meetingID && booking.Status == "R" {
+      timeslots[time] = Booking{"A", "", -1, make([]int, 0), make([]int, 0)}  
+    }
+  }
+}
+
 func updateToClient(calendar Calendar, address string) {
 
   client, err := rpc.DialHTTP("tcp", incrementAddress(address))
@@ -1503,7 +1515,7 @@ func pushMyCache(addressLookup map[int]Peer, myCalendar *Calendar, myNodeNum int
     client, err := rpc.DialHTTP("tcp", addressLookup[nodeNum].Address)
 
     if err != nil {
-      fmt.Println("Detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
+      fmt.Println("On cache: detected a failure on " + addressLookup[nodeNum].Name + " fallback to next person")
       *addressLookup[nodeNum].IsActive = false
       continue
     }
